@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/config"
+	_ "github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/config"
 	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/endpoint"
 	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/repository"
 	// репозиторий (хранилище) 1 файло 2 память 3 pg sql(db)
@@ -21,10 +21,10 @@ import (
 func main() {
 	log.Print("Starting the app")
 	// настройка порта, настроек хранилища, таймаут при закрытии сервиса
-	port := flag.String("port", "8000", "Port")
+	// port := flag.String("port", "8000", "Port")
 	storageName := flag.String("storage", "storage.json", "data storage")
 	shutdownTimeout := flag.Int64("shutdown_timeout", 3, "shutdown timeout")
-
+/*
 	// for heroku env variable PORT (supersedes flag cmd setting)
 	basepath, err := os.Getwd()
 	if err != nil {
@@ -38,6 +38,12 @@ func main() {
 	}
 	//reassign port val from .env file
 	port = &c.PORT
+*/
+	port := os.Getenv("PORT")
+
+	if port == "" {
+		log.Fatal("$PORT must be set")
+	}
 	// инициализация файлового хранилища ук на структуру repo
 	var repoif repository.RepoIf
 	// подстановка в интерфейс соотвествующего хранилища
@@ -56,7 +62,7 @@ func main() {
 	// создание сервера с таким портом, и обработчиком интерфейс которого связывается а файлохранилищем
 	// т.к. инициализация происходит (RegisterPublicHTTP)- в интерфейс endpoint подается структура из file.go
 	serv := http.Server{
-		Addr:    net.JoinHostPort("", *port),
+		Addr:    net.JoinHostPort("", port),
 		Handler: endpoint.RegisterPublicHTTP(linkSVC),
 	}
 	// запуск сервера
@@ -69,7 +75,7 @@ func main() {
 	interrupt := make(chan os.Signal, 1)
 	signal.Notify(interrupt, syscall.SIGINT, syscall.SIGTERM, os.Interrupt)
 
-	log.Printf("Started app at port = %s", *port)
+	log.Printf("Started app at port = %s", port)
 	// ждет сигнала
 	sig := <-interrupt
 
