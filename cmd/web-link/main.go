@@ -21,7 +21,7 @@ import (
 func main() {
 	log.Print("Starting the app")
 	// настройка порта, настроек хранилища, таймаут при закрытии сервиса
-	// port := flag.String("port", "8000", "Port")
+	portdef := flag.String("port", "8000", "Port")
 	storageName := flag.String("storage", "storage.json", "data storage")
 	shutdownTimeout := flag.Int64("shutdown_timeout", 3, "shutdown timeout")
 /*
@@ -42,7 +42,8 @@ func main() {
 	port := os.Getenv("PORT")
 
 	if port == "" {
-		log.Fatal("$PORT must be set")
+		log.Printf("$PORT is not set. using default %s", *portdef)
+		port = *portdef
 	}
 	// инициализация файлового хранилища ук на структуру repo
 	var repoif repository.RepoIf
