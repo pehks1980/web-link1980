@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"time"
 
 	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/model"
@@ -273,6 +274,10 @@ func getFromLink(linkSvc linkSvc) http.HandlerFunc {
 
 			datajson.Data = append(datajson.Data, getElement)
 		}
+		// sort by date asc
+		sort.Slice(datajson.Data, func(i, j int) bool {
+			return datajson.Data[i].Datetime.Before(datajson.Data[j].Datetime)
+		})
 
 		err = json.NewEncoder(w).Encode(datajson)
 		if err != nil {

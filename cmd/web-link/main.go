@@ -24,21 +24,21 @@ func main() {
 	portdef := flag.String("port", "8000", "Port")
 	storageName := flag.String("storage", "storage.json", "data storage")
 	shutdownTimeout := flag.Int64("shutdown_timeout", 3, "shutdown timeout")
-/*
-	// for heroku env variable PORT (supersedes flag cmd setting)
-	basepath, err := os.Getwd()
-	if err != nil {
-		log.Fatalf("path error %v ", err)
-	}
-	// load config
-	c, errc := config.New(basepath + "/.env")
-	if errc != nil {
-		log.Fatalf("config error : %v", err)
-		return
-	}
-	//reassign port val from .env file
-	port = &c.PORT
-*/
+	/*
+		// for heroku env variable PORT (supersedes flag cmd setting)
+		basepath, err := os.Getwd()
+		if err != nil {
+			log.Fatalf("path error %v ", err)
+		}
+		// load config
+		c, errc := config.New(basepath + "/.env")
+		if errc != nil {
+			log.Fatalf("config error : %v", err)
+			return
+		}
+		//reassign port val from .env file
+		port = &c.PORT
+	*/
 	port := os.Getenv("PORT")
 
 	if port == "" {
