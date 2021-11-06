@@ -57,11 +57,15 @@
 
 				<option value="file0">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/endpoint/api-error.go (100.0%)</option>
 
-				<option value="file1">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/endpoint/link-middle.go (78.7%)</option>
+				<option value="file1">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/endpoint/link-middle.go (69.7%)</option>
 
 				<option value="file2">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/endpoint/link-validate.go (84.6%)</option>
 
-				<option value="file3">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/endpoint/link.go (65.4%)</option>
+				<option value="file3">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/app/endpoint/link.go (32.5%)</option>
+
+				<option value="file4">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/repository/file.go (52.6%)</option>
+
+				<option value="file5">github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/repository/postgres.go (53.2%)</option>
 
 				</select>
 			</div>
@@ -106,6 +110,7 @@ var (
                 9:   "Unknown content type",
                 10:  "Internal repo problem",
                 11:  "No shorturl in data",
+                12:  "Login error, provide username password",
                 400: "Bad request",
                 401: "Unauthorized",
                 402: "Payment required",
@@ -159,7 +164,17 @@ func LoggingMiddleware(next http.Handler) http.Handler <span class="cov8" title=
                         UID,
                         time.Since(start),
                 )
+                /*
+                        log.Printf("--&gt; %s %s", r.Method, r.URL.Path)
+
+                        lrw := negroni.NewResponseWriter(w)
+                        next.ServeHTTP(lrw, r)
+
+                        statusCode := lrw.Status()
+                        log.Printf("&lt;-- %d %s", statusCode, http.StatusText(statusCode))
+                */
         }</span>)
+
 }
 
 // GenJWTWithClaims - generate jwt tokens pair
@@ -208,14 +223,23 @@ func JWTCheckMiddleware(next http.Handler) http.Handler <span class="cov8" title
                         next.ServeHTTP(w, r)
                         return
                 }</span>
-
-                <span class="cov8" title="1">re := regexp.MustCompile(`/shortopen/`)
-                res := re.FindStringSubmatch(r.RequestURI)
-                if len(res) != 0 </span><span class="cov8" title="1">{
+                <span class="cov8" title="1">if r.RequestURI == "/user/register" </span><span class="cov0" title="0">{
                         //bypass jwt check when authenticating
                         next.ServeHTTP(w, r)
                         return
                 }</span>
+
+                <span class="cov8" title="1">checkif := 1 // db case svc.WhoAmI()
+                if checkif == 0 </span><span class="cov0" title="0">{
+                        // bypass middle ware token logic in old version using file storage
+                        re := regexp.MustCompile(`/shortopen/`)
+                        res := re.FindStringSubmatch(r.RequestURI)
+                        if len(res) != 0 </span><span class="cov0" title="0">{
+                                //bypass jwt check when authenticating
+                                next.ServeHTTP(w, r)
+                                return
+                        }</span>
+                }
 
                 <span class="cov8" title="1">authHeader := strings.Split(r.Header.Get("Authorization"), "Bearer ")
 
@@ -326,7 +350,11 @@ import (
         "fmt"
         "log"
         "net/http"
+        "sort"
+        "strconv"
         "time"
+
+        "github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/repository"
 
         "github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/model"
 
@@ -339,11 +367,20 @@ import (
 //  list - list all links for uid user
 //  GetUn - open link for redir and add 1 to redir count
 type linkSvc interface {
-        Get(uid, key string) (model.DataEl, error)
-        Put(uid, key string, value model.DataEl) error
-        Del(uid, key string) error
+        Get(uid, key string, su bool) (model.DataEl, error)
+        Put(uid, key string, value model.DataEl, su bool) error
+        Del(uid, key string, su bool) error
         List(uid string) ([]string, error)
-        GetUn(shortlink string) (model.DataEl, error)
+        GetUn(shortlink string) (string, error)
+        PutUser(value model.User) (string, error)
+        DelUser(uid string) error
+        GetUser(uid string) (model.User, error)
+        WhoAmI() uint64
+        PayUser(uidA, uidB, amount string) error
+        FindSuperUser() (string, error)
+        GetAll() (model.Data, error)
+        AuthUser(user model.User) (string, error)
+        GetAllUsers() (model.Users, error)
 }
 
 // RegisterPublicHTTP - регистрация роутинга путей типа urls.py для обработки сервером
@@ -353,6 +390,15 @@ func RegisterPublicHTTP(linkSvc linkSvc) *mux.Router <span class="cov8" title="1
         // JWT authorization
         r.HandleFunc("/user/auth", postAuth(linkSvc)).Methods(http.MethodPost)
         r.HandleFunc("/token/refresh", postTokenRefresh(linkSvc)).Methods(http.MethodPost)
+        r.HandleFunc("/user/register", postRegister(linkSvc)).Methods(http.MethodPost)
+
+        r.HandleFunc("/users/all", getAllUserData(linkSvc)).Methods(http.MethodGet)
+        r.HandleFunc("/user/", getUserData(linkSvc)).Methods(http.MethodGet)
+        r.HandleFunc("/user/{uid}", getUserData(linkSvc)).Methods(http.MethodGet)
+
+        r.HandleFunc("/user/{uid}", putUserData(linkSvc)).Methods(http.MethodPut)
+        r.HandleFunc("/user/{uid}", delUserData(linkSvc)).Methods(http.MethodDelete)
+
         // Main function
         r.HandleFunc("/shortopen/{shortlink}", getShortOpen(linkSvc)).Methods(http.MethodGet)
         r.HandleFunc("/shortstat/{shortlink}", getShortStat(linkSvc)).Methods(http.MethodGet)
@@ -366,6 +412,182 @@ func RegisterPublicHTTP(linkSvc linkSvc) *mux.Router <span class="cov8" title="1
         r.Use(LoggingMiddleware)
         return r
 }</span>
+
+// delUserData - del user from admin (by suid)
+func delUserData(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class="cov8" title="1">{
+        return func(w http.ResponseWriter, request *http.Request) </span><span class="cov0" title="0">{
+                // check if uid == suid
+                // if yes delete user, which uid is in json
+                props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                UID := fmt.Sprintf("%v", props["uid"])
+                suid, _ := svc.FindSuperUser()
+                if UID != suid </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 401, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">params := mux.Vars(request)
+                effectiveUID := params["uid"]
+                // check user to delete is not SU
+                if effectiveUID == suid </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 401, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">err := svc.DelUser(effectiveUID)
+                if err != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 10, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">return</span>
+        }
+}
+
+// putUserData - update user from admin (by suid)
+func putUserData(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class="cov8" title="1">{
+        return func(w http.ResponseWriter, request *http.Request) </span><span class="cov0" title="0">{
+                // check if uid == suid
+                // if yes delete user, which uid is in json
+                props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                UID := fmt.Sprintf("%v", props["uid"])
+                suid, _ := svc.FindSuperUser()
+                if UID != suid </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 401, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">params := mux.Vars(request)
+                effectiveUID := params["uid"]
+
+                contentType := request.Header.Get("Content-Type")
+                if contentType != "application/json" </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 9, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">w.Header().Set("Content-Type", "application/json")
+                var user = model.User{}
+                //found key, work with body
+                err := json.NewDecoder(request.Body).Decode(&amp;user)
+                if err != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 9, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">user.UID = effectiveUID
+                //looks ok, update user storage
+                //check user name and email -&gt; user key when put should be the same
+                checkUID := repository.MyHash256(user.Name + user.Email)
+                if effectiveUID != checkUID </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 404, http.StatusBadRequest)
+                        return
+                }</span>
+
+                <span class="cov0" title="0">_, err = svc.PutUser(user)
+                if err != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 9, http.StatusBadRequest)
+                        return
+                }</span>
+                // form answer json
+                <span class="cov0" title="0">err = json.NewEncoder(w).Encode(user)
+                if err != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 9, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">return</span>
+
+        }
+}
+
+// getAllUserData - suid method to get all users data for admin purposes
+func getAllUserData(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class="cov8" title="1">{
+        return func(w http.ResponseWriter, request *http.Request) </span><span class="cov0" title="0">{
+                // we just take uid from token and reply with model user json
+                // if we have uid == suid in token we take get param uid and get this uid information with this model json
+                props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                UID := fmt.Sprintf("%v", props["uid"])
+                suid, _ := svc.FindSuperUser()
+                if UID != suid </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 401, http.StatusBadRequest)
+                        return
+                }</span>
+
+                <span class="cov0" title="0">sqlData, err3 := svc.GetAllUsers()
+                if err3 != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 10, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">err2 := json.NewEncoder(w).Encode(sqlData)
+                if err2 != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 10, http.StatusBadRequest)
+                        return
+                }</span>
+                //send http reply
+                <span class="cov0" title="0">return</span>
+        }
+}
+
+// getUserData - get one user info
+func getUserData(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class="cov8" title="1">{
+        return func(w http.ResponseWriter, request *http.Request) </span><span class="cov0" title="0">{
+                // we just take uid from token and reply with model user json
+                // if we have uid == suid in token we take get param uid and get this uid information with this model json
+                props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                UID := fmt.Sprintf("%v", props["uid"])
+                suid, _ := svc.FindSuperUser()
+                var effectiveUID = UID
+                if UID == suid </span><span class="cov0" title="0">{
+                        params := mux.Vars(request)
+                        effectiveUID = params["uid"]
+                        if effectiveUID == "" </span><span class="cov0" title="0">{
+                                effectiveUID = UID
+                        }</span>
+                }
+
+                <span class="cov0" title="0">user, err := svc.GetUser(effectiveUID)
+                if err != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 10, http.StatusBadRequest)
+                        return
+                }</span>
+                //strip off passwd ...
+                <span class="cov0" title="0">user.Passwd = ""
+                w.Header().Set("Content-Type", "application/json")
+                w.WriteHeader(http.StatusOK)
+                err = json.NewEncoder(w).Encode(user)
+                if err != nil </span><span class="cov0" title="0">{
+                        return
+                }</span>
+
+        }
+}
+
+//postRegister - register new user
+func postRegister(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class="cov8" title="1">{
+        return func(w http.ResponseWriter, request *http.Request) </span><span class="cov0" title="0">{
+                //json header check
+                contentType := request.Header.Get("Content-Type")
+                if contentType != "application/json" </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 9, http.StatusBadRequest)
+                        return
+                }</span>
+
+                <span class="cov0" title="0">var jsonUser = model.User{}
+
+                err := json.NewDecoder(request.Body).Decode(&amp;jsonUser)
+                if err != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 400, http.StatusBadRequest)
+                        return
+                }</span>
+
+                <span class="cov0" title="0">var err1 error
+                jsonUser.Role = "USER"
+                jsonUser.Balance = "100.00"
+
+                UID, err1 := svc.PutUser(jsonUser)
+
+                if err1 != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 10, http.StatusBadRequest)
+                        return
+                }</span>
+                <span class="cov0" title="0">log.Printf("NEW USER %s (UID=%s) is registered", jsonUser.Name, UID)
+                w.WriteHeader(http.StatusOK)</span>
+        }
+}
 
 // postTokenRefresh - get new pair of jwt tokens when access token is expired
 func postTokenRefresh(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class="cov8" title="1">{
@@ -406,7 +628,7 @@ func postTokenRefresh(svc linkSvc) func(http.ResponseWriter, *http.Request) <spa
         }
 }
 
-// postAuth - autheticate and give authorization token
+// postAuth - authenticate and give authorization token
 func postAuth(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class="cov8" title="1">{
         return func(w http.ResponseWriter, request *http.Request) </span><span class="cov8" title="1">{
                 //json header check
@@ -421,8 +643,48 @@ func postAuth(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class=
                         Refresh string `json:"refreshToken"`
                 }
 
-                type PostJSONRq struct {
-                        UID string `json:"uid"`
+                checkif := svc.WhoAmI()
+
+                if checkif == 1 </span><span class="cov0" title="0">{
+
+                        var jsonPostUser = model.User{}
+
+                        err := json.NewDecoder(request.Body).Decode(&amp;jsonPostUser)
+                        if err != nil </span><span class="cov0" title="0">{
+                                ResponseAPIError(w, 400, http.StatusBadRequest)
+                                return
+                        }</span>
+                        <span class="cov0" title="0">var err1 error
+                        UID, err1 := svc.AuthUser(jsonPostUser)
+
+                        if err1 != nil || UID == "" </span><span class="cov0" title="0">{
+                                log.Printf("USER %s Log in error.\n", jsonPostUser.Name)
+                                ResponseAPIError(w, 12, http.StatusBadRequest)
+                                return
+                        }</span>
+                        <span class="cov0" title="0">log.Printf("USER %s Logged in.\n", jsonPostUser.Name)
+                        tokenAccess, _ := GenJWTWithClaims(UID, 0)
+                        tokenRefresh, _ := GenJWTWithClaims(UID, 1)
+
+                        var jsonTokens = TokenAnswer{
+                                Access:  tokenAccess,
+                                Refresh: tokenRefresh,
+                        }
+
+                        w.Header().Set("Content-Type", "application/json")
+
+                        err = json.NewEncoder(w).Encode(jsonTokens)
+                        if err != nil </span><span class="cov0" title="0">{
+                                ResponseAPIError(w, 10, http.StatusBadRequest)
+                                return
+                        }</span>
+
+                        <span class="cov0" title="0">return</span>
+
+                }
+
+                <span class="cov8" title="1">type PostJSONRq struct {
+                        UID string `json:"name"`
                 }
 
                 var jsonPostRq = PostJSONRq{}
@@ -438,8 +700,44 @@ func postAuth(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class=
                         return
                 }</span>
 
-                <span class="cov8" title="1">tokenAccess, _ := GenJWTWithClaims(jsonPostRq.UID, 0)
-                tokenRefresh, _ := GenJWTWithClaims(jsonPostRq.UID, 1)
+                <span class="cov8" title="1">UID := jsonPostRq.UID
+
+                checkif = svc.WhoAmI()
+
+                if checkif == 1 </span><span class="cov0" title="0">{
+
+                        //check if user with UID exists
+                        user, err4 := svc.GetUser(UID)
+                        if err4 != nil </span><span class="cov0" title="0">{
+                                fmt.Printf("can't check user in db %s \n", UID)
+                                ResponseAPIError(w, 10, http.StatusBadRequest)
+                                return
+                        }</span>
+
+                        <span class="cov0" title="0">if user.Role == "" </span><span class="cov0" title="0">{
+                                user = model.User{
+                                        Name:    jsonPostRq.UID,
+                                        Passwd:  "123",
+                                        Email:   "L@u.ca",
+                                        Balance: "100.00",
+                                        Role:    "USER",
+                                }
+
+                        }</span>
+
+                        <span class="cov0" title="0">var err1 error
+                        UID, err1 = svc.PutUser(user)
+
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                ResponseAPIError(w, 10, http.StatusBadRequest)
+                                return
+                        }</span>
+
+                        <span class="cov0" title="0">fmt.Printf("pg added user. %s \n", user.Name)</span>
+                }
+
+                <span class="cov8" title="1">tokenAccess, _ := GenJWTWithClaims(UID, 0)
+                tokenRefresh, _ := GenJWTWithClaims(UID, 1)
 
                 var jsonTokens = TokenAnswer{
                         Access:  tokenAccess,
@@ -450,6 +748,7 @@ func postAuth(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class=
                 w.WriteHeader(http.StatusOK)
                 err = json.NewEncoder(w).Encode(jsonTokens)
                 if err != nil </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 10, http.StatusBadRequest)
                         return
                 }</span>
 
@@ -462,14 +761,35 @@ func postAuth(svc linkSvc) func(http.ResponseWriter, *http.Request) <span class=
 func delFromLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">{
         return func(w http.ResponseWriter, request *http.Request) </span><span class="cov8" title="1">{
 
-                UID, storageKey, res := ValidateRequestShortLink(request, linkSvc)
-                if !res </span><span class="cov0" title="0">{
-                        ResponseAPIError(w, 4, http.StatusBadRequest)
+                checkif := linkSvc.WhoAmI()
+
+                var usefulUID, storageKey string
+                var res bool
+                usefulUID, storageKey, res = ValidateRequestShortLink(request, linkSvc)
+                var flag bool = false
+
+                if checkif == 1 </span><span class="cov0" title="0">{
+                        props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                        //fmt.Println(props["uid"])
+                        UID := fmt.Sprintf("%v", props["uid"])
+
+                        suid, _ := linkSvc.FindSuperUser()
+                        if suid == UID </span><span class="cov0" title="0">{
+                                // superuser deletes other user record here
+                                params := mux.Vars(request)
+                                storageKey = params["shortlink"]
+                                flag = true
+                                usefulUID = UID
+                        }</span>
+                }
+
+                <span class="cov8" title="1">if !res &amp;&amp; !flag </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 9, http.StatusBadRequest)
                         return
                 }</span>
 
                 //found key, delete it
-                <span class="cov8" title="1">err := linkSvc.Del(UID, storageKey)
+                <span class="cov8" title="1">err := linkSvc.Del(usefulUID, storageKey, false)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 10, http.StatusBadRequest)
                         return
@@ -488,25 +808,49 @@ func putToLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">{
                         return
                 }</span>
 
-                <span class="cov8" title="1">var element = model.DataEl{}
-                w.Header().Set("Content-Type", "application/json")
+                <span class="cov8" title="1">w.Header().Set("Content-Type", "application/json")
 
-                UID, _, res := ValidateRequestShortLink(request, linkSvc)
-                if !res </span><span class="cov0" title="0">{
+                checkif := linkSvc.WhoAmI()
+
+                var usefulUID string
+                var res bool
+                usefulUID, _, res = ValidateRequestShortLink(request, linkSvc)
+                var flag bool = false
+
+                if checkif == 1 </span><span class="cov0" title="0">{
+                        props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                        //fmt.Println(props["uid"])
+                        UID := fmt.Sprintf("%v", props["uid"])
+                        params := mux.Vars(request)
+                        shortURL := params["shortlink"]
+
+                        suid, _ := linkSvc.FindSuperUser()
+                        if suid == UID </span><span class="cov0" title="0">{
+                                // superuser updates other user record here
+                                // get uid of that user
+                                dbElem, _ := linkSvc.Get(UID, shortURL, true)
+                                usefulUID = dbElem.UID
+                                flag = true
+                        }</span>
+                }
+
+                <span class="cov8" title="1">if !res &amp;&amp; !flag </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 9, http.StatusBadRequest)
                         return
                 }</span>
+
+                <span class="cov8" title="1">var element = model.DataEl{}
                 //found key, work with body
-                <span class="cov8" title="1">err := json.NewDecoder(request.Body).Decode(&amp;element)
+                err := json.NewDecoder(request.Body).Decode(&amp;element)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 9, http.StatusBadRequest)
                         return
                 }</span>
                 <span class="cov8" title="1">element.Datetime = time.Now()
-                element.UID = UID
+                element.UID = usefulUID
                 element.Active = 1
                 //looks ok, update storage
-                err = linkSvc.Put(UID, element.Shorturl, element)
+                err = linkSvc.Put(usefulUID, element.Shorturl, element, false)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 9, http.StatusBadRequest)
                 }</span>
@@ -528,16 +872,47 @@ func postToLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">{
                         ResponseAPIError(w, 9, http.StatusBadRequest)
                         return
                 }</span>
-                <span class="cov8" title="1">var element = model.DataEl{}
-                w.Header().Set("Content-Type", "application/json")
 
-                storageKeys, UID, err := GetUserStorageKeys(request, linkSvc)
+                <span class="cov8" title="1">storageKeys, UID, err := GetUserStorageKeys(request, linkSvc)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 10, http.StatusBadRequest)
                         return
                 }</span>
 
-                <span class="cov8" title="1">err = json.NewDecoder(request.Body).Decode(&amp;element)
+                <span class="cov8" title="1">checkif := linkSvc.WhoAmI()
+                //db version supports payments for adding links
+                if checkif == 1 </span><span class="cov0" title="0">{
+                        //make payment of 50.00 for the user account who uploaded link from SU account
+
+                        user, err2 := linkSvc.GetUser(UID)
+                        if err2 != nil </span><span class="cov0" title="0">{
+                                log.Printf("Coild not get user profile, err: %v\n", err2)
+                        }</span>
+
+                        <span class="cov0" title="0">if user.Role == "CREATOR" || user.Role == "SUPERUSER" </span><span class="cov0" title="0">{
+                                //find payer - su
+                                suid, err1 := linkSvc.FindSuperUser()
+                                if err1 != nil </span><span class="cov0" title="0">{
+                                        log.Printf("Could not find suid.. sorry, payment cannot be done.. err: %v\n", err1)
+                                }</span>
+
+                                <span class="cov0" title="0">err1 = linkSvc.PayUser(suid, UID, "50.00")
+                                if err1 != nil </span><span class="cov0" title="0">{
+                                        log.Printf("Payment error, payment to cannot be done.. err: %v\n", err1)
+                                }</span>
+                        } else<span class="cov0" title="0"> {
+                                log.Printf("user is not CREATOR, cannot add link and no payment available\n")
+                                ResponseAPIError(w, 401, http.StatusBadRequest)
+                                return
+                        }</span>
+
+                }
+
+                <span class="cov8" title="1">var element = model.DataEl{}
+
+                w.Header().Set("Content-Type", "application/json")
+
+                err = json.NewDecoder(request.Body).Decode(&amp;element)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 9, http.StatusBadRequest)
                         return
@@ -558,10 +933,12 @@ func postToLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">{
                 }
                 <span class="cov8" title="1">element.UID = UID
                 element.Active = 1
-                err = linkSvc.Put(UID, element.Shorturl, element)
+                err = linkSvc.Put(UID, element.Shorturl, element, false)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 10, http.StatusBadRequest)
+                        return
                 }</span>
+
                 <span class="cov8" title="1">w.WriteHeader(http.StatusCreated) // this has to be the first write!!!
                 err = json.NewEncoder(w).Encode(element)
                 if err != nil </span><span class="cov0" title="0">{
@@ -578,6 +955,7 @@ func getFromLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">
                 w.Header().Set("Content-Type", "application/json")
                 var datajson = model.Data{}
 
+                // logic for file - get links of the user
                 storageKeys, UID, err := GetUserStorageKeys(request, linkSvc)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 10, http.StatusBadRequest)
@@ -585,7 +963,7 @@ func getFromLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">
                 }</span>
 
                 <span class="cov8" title="1">for _, storageKey := range storageKeys </span><span class="cov8" title="1">{
-                        getElement, errfor := linkSvc.Get(UID, storageKey)
+                        getElement, errfor := linkSvc.Get(UID, storageKey, false)
                         if errfor != nil </span><span class="cov0" title="0">{
                                 ResponseAPIError(w, 10, http.StatusBadRequest)
                                 return
@@ -595,8 +973,42 @@ func getFromLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">
                         <span class="cov8" title="1">datajson.Data = append(datajson.Data, getElement)</span>
                 }
 
+                // sort by date asc
+                <span class="cov8" title="1">sort.Slice(datajson.Data, func(i, j int) bool </span><span class="cov0" title="0">{
+                        return datajson.Data[i].Datetime.Before(datajson.Data[j].Datetime)
+                }</span>)
+
+                <span class="cov8" title="1">checkif := linkSvc.WhoAmI()
+
+                if checkif == 1 </span><span class="cov0" title="0">{
+                        //logic for pg if user role = user list all links in database
+
+                        user, err1 := linkSvc.GetUser(UID)
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                log.Printf("could not get user profie")
+                                // todo insert reply with error
+                                return
+                        }</span>
+                        <span class="cov0" title="0">if user.Role == "USER" || user.Role == "SUPERUSER" </span><span class="cov0" title="0">{
+                                //
+                                sqlData, err3 := linkSvc.GetAll()
+                                if err3 != nil </span><span class="cov0" title="0">{
+                                        //to do insert reply with error
+                                        return
+                                }</span>
+                                <span class="cov0" title="0">err2 := json.NewEncoder(w).Encode(sqlData)
+                                if err2 != nil </span><span class="cov0" title="0">{
+                                        //to do insert reply with error
+                                        return
+                                }</span>
+                                //send http reply
+                                <span class="cov0" title="0">return</span>
+                        }
+                }
+
                 <span class="cov8" title="1">err = json.NewEncoder(w).Encode(datajson)
                 if err != nil </span><span class="cov0" title="0">{
+                        //to do insert reply with error
                         return
                 }</span>
 
@@ -607,22 +1019,53 @@ func getFromLink(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">
 func getShortStat(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1">{
         return func(w http.ResponseWriter, request *http.Request) </span><span class="cov0" title="0">{
                 w.Header().Set("Content-Type", "application/json")
-                var datajson = model.Data{}
+
+                checkif := linkSvc.WhoAmI()
+
+                if checkif == 1 </span><span class="cov0" title="0">{
+                        props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                        //fmt.Println(props["uid"])
+                        UID := fmt.Sprintf("%v", props["uid"])
+                        suid, _ := linkSvc.FindSuperUser()
+                        if suid == UID </span><span class="cov0" title="0">{
+                                //get link info of other user
+                                params := mux.Vars(request)
+                                shortURL := params["shortlink"]
+                                //ignore uid
+                                getElement, err := linkSvc.Get(UID, shortURL, true)
+                                if err != nil </span><span class="cov0" title="0">{
+                                        ResponseAPIError(w, 10, http.StatusBadRequest)
+                                        return
+                                }</span>
+
+                                <span class="cov0" title="0">var datajson = model.Data{}
+                                datajson.Data = append(datajson.Data, getElement)
+                                err = json.NewEncoder(w).Encode(datajson)
+                                if err != nil </span><span class="cov0" title="0">{
+                                        return
+                                }</span>
+                                //finish and reply
+                                <span class="cov0" title="0">return</span>
+
+                        }
+
+                }
                 // check user authorization, get user UID, get key (for this user, check if key exists)
                 // if res - yes then do the action  - give string from repo as json
-                UID, storageKey, res := ValidateRequestShortLink(request, linkSvc)
+                <span class="cov0" title="0">UID, storageKey, res := ValidateRequestShortLink(request, linkSvc)
                 if !res </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 11, http.StatusBadRequest)
                         return
                 }</span>
 
-                <span class="cov0" title="0">getElement, err := linkSvc.Get(UID, storageKey)
+                <span class="cov0" title="0">getElement, err := linkSvc.Get(UID, storageKey, false)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 10, http.StatusBadRequest)
                         return
                 }</span>
 
-                <span class="cov0" title="0">datajson.Data = append(datajson.Data, getElement)
+                <span class="cov0" title="0">var datajson = model.Data{}
+                datajson.Data = append(datajson.Data, getElement)
                 err = json.NewEncoder(w).Encode(datajson)
                 if err != nil </span><span class="cov0" title="0">{
                         return
@@ -640,18 +1083,1348 @@ func getShortOpen(linkSvc linkSvc) http.HandlerFunc <span class="cov8" title="1"
                 params := mux.Vars(request)
                 shortURL := params["shortlink"]
                 // GetUn retreives link and updates redir count
-                getElement, err := linkSvc.GetUn(shortURL)
+                URL, err := linkSvc.GetUn(shortURL)
                 if err != nil </span><span class="cov0" title="0">{
                         ResponseAPIError(w, 10, http.StatusBadRequest)
                         return
                 }</span>
+                <span class="cov8" title="1">if URL == "" </span><span class="cov0" title="0">{
+                        ResponseAPIError(w, 404, http.StatusBadRequest)
+                        return
+                }</span>
 
-                <span class="cov8" title="1">log.Printf("opening user %s link  %s (short is %s) redirs(++) %d \n", getElement.UID, getElement.URL, getElement.Shorturl, getElement.Redirs)
-                http.Redirect(w, request, getElement.URL, http.StatusSeeOther)
+                <span class="cov8" title="1">checkif := linkSvc.WhoAmI()
+                //db version supports payments for opening links
+                if checkif == 1 </span><span class="cov0" title="0">{
+                        //make payment of 10.00 for the superuser account from USER who opened link
+                        //get UID from token
+
+                        type Answer struct {
+                                URL string `json:"url"`
+                        }
+
+                        amount := "10.0"
+                        props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
+                        //fmt.Println(props["uid"])
+                        UID := fmt.Sprintf("%v", props["uid"])
+
+                        user, err2 := linkSvc.GetUser(UID)
+                        if err2 != nil </span><span class="cov0" title="0">{
+                                log.Printf("Could not get user profile, err: %v\n", err2)
+                        }</span>
+
+                        <span class="cov0" title="0">if user.Role == "USER" </span><span class="cov0" title="0">{
+                                //todo check if balance is not less then amount
+                                balance, _ := strconv.ParseFloat(user.Balance, 64)
+                                flamount, _ := strconv.ParseFloat(amount, 64)
+                                if balance &lt; 0 || balance &lt; flamount </span><span class="cov0" title="0">{
+                                        ResponseAPIError(w, 402, http.StatusBadRequest)
+                                        return
+                                }</span>
+                                //find payer - su
+                                <span class="cov0" title="0">suid, err1 := linkSvc.FindSuperUser()
+                                if err1 != nil </span><span class="cov0" title="0">{
+                                        log.Printf("Could not find suid.. sorry, payment cannot be done.. err: %v\n", err1)
+                                }</span>
+
+                                <span class="cov0" title="0">err1 = linkSvc.PayUser(UID, suid, amount)
+                                if err1 != nil </span><span class="cov0" title="0">{
+                                        log.Printf("Payment error, payment to cannot be done.. err: %v\n", err1)
+                                }</span>
+
+                        } else<span class="cov0" title="0"> {
+                                log.Printf("user is not USER, no payment available\n")
+                        }</span>
+
+                        <span class="cov0" title="0">var jsonAns = Answer{
+                                URL: URL,
+                        }
+
+                        w.Header().Set("Content-Type", "application/json")
+
+                        err = json.NewEncoder(w).Encode(jsonAns)
+                        if err != nil </span><span class="cov0" title="0">{
+                                ResponseAPIError(w, 10, http.StatusBadRequest)
+                                return
+                        }</span>
+                        <span class="cov0" title="0">return</span>
+
+                }
+
+                //log.Printf("opening user %s link  %s (short is %s) redirs(++) %d \n", getElement.UID, getElement.URL, getElement.Shorturl, getElement.Redirs)
+                <span class="cov8" title="1">http.Redirect(w, request, URL, http.StatusFound)
                 //&lt;a href="/shortopen/www.mail.ru"&gt;See Other&lt;/a&gt;.
                 return</span>
 
         }
+}
+</pre>
+
+		<pre class="file" id="file4" style="display: none">package repository
+
+import (
+        "encoding/json"
+        "fmt"
+        "io/ioutil"
+        "log"
+        "os"
+        "strings"
+        "sync"
+
+        "github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/model"
+)
+
+// RepoIf - main methods for a storage (a file repo) same as linkSVC
+type RepoIf interface {
+        New(filename string) RepoIf
+        Get(uid, key string, su bool) (model.DataEl, error)
+        Put(uid, key string, value model.DataEl, su bool) error
+        Del(uid, key string, su bool) error
+        List(uid string) ([]string, error)
+        GetUn(shortlink string) (string, error)
+        CloseConn()
+        PutUser(value model.User) (string, error)
+        DelUser(uid string) error
+        GetUser(uid string) (model.User, error)
+        WhoAmI() uint64
+        PayUser(uidA, uidB, amount string) error
+        FindSuperUser() (string, error)
+        GetAll() (model.Data, error)
+        AuthUser(user model.User) (string, error)
+        GetAllUsers() (model.Users, error)
+}
+
+//GetAllUsers - stub
+func (fr *FileRepo) GetAllUsers() (model.Users, error) <span class="cov0" title="0">{
+        return model.Users{}, nil
+}</span>
+
+// FileRepo - структура для файло-стораджа
+// fileData - мап содержимого файла хешированная as map key := datael.UID + ":" + datael.Shorturl
+type FileRepo struct {
+        sync.RWMutex
+        fileName string
+        fileData map[string]model.DataEl
+}
+
+//AuthUser - stub
+func (fr *FileRepo) AuthUser(user model.User) (string, error) <span class="cov0" title="0">{
+        return "", nil
+}</span>
+
+// WhoAmI - identification of interface
+func (fr *FileRepo) WhoAmI() uint64 <span class="cov0" title="0">{
+        return 0
+}</span>
+
+// New - инициализация файлостораджа
+func (fr *FileRepo) New(filename string) RepoIf <span class="cov8" title="1">{
+        // init file repo
+        fileRepo := &amp;FileRepo{
+                fileName: filename,
+                fileData: make(map[string]model.DataEl),
+        }
+        //check if file exists
+        // if yes load from disk and populate repo structs
+        // so 'Image' of file is held in map and it gets flushed every time change occurs
+        if _, err := os.Stat(filename); err == nil </span><span class="cov0" title="0">{
+                // path/to/whatever exists
+                err = fileRepo.FileRepoUnpackToStruct()
+                if err != nil </span><span class="cov0" title="0">{
+                        log.Fatalf("Problem with filesystem: %v", err)
+                }</span>
+        }
+
+        <span class="cov8" title="1">return fileRepo</span>
+}
+
+// DumpMapToFile - no lock, as its has been done in upper level
+func (fr *FileRepo) DumpMapToFile() error <span class="cov8" title="1">{
+        // to do dump map to file.json
+        // make slice of active links and write it to file
+        var fileDataSlice model.Data
+
+        for _, value := range fr.fileData </span><span class="cov8" title="1">{
+                // stripe all not Active when dumping
+                if value.Active == 1 </span><span class="cov8" title="1">{
+                        fileDataSlice.Data = append(fileDataSlice.Data, value)
+                }</span>
+        }
+
+        <span class="cov8" title="1">filedata, _ := json.MarshalIndent(fileDataSlice, "", " ")
+
+        err := ioutil.WriteFile(fr.fileName, filedata, 0644)
+        if err != nil </span><span class="cov0" title="0">{
+                log.Fatal(err)
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// FileRepoUnpackToStruct - load file to map of structs
+func (fr *FileRepo) FileRepoUnpackToStruct() error <span class="cov0" title="0">{
+        fr.RWMutex.Lock() // rw lock while reading file to fr map structure
+        defer fr.RWMutex.Unlock()
+        // по ссылке извлекаем строку файлового хранилища
+        // читаем все в мапу и делаем поиск
+        //jsonFile, err := os.Open(fr.fileName)
+        jsonFile, err := os.OpenFile(fr.fileName, os.O_RDWR|os.O_CREATE, 0644)
+        if err != nil </span><span class="cov0" title="0">{
+                log.Printf("json repo file %s open error", fr.fileName)
+                return err
+        }</span>
+
+        // Не забываем закрыть файл при выходе из функции
+        <span class="cov0" title="0">defer func() </span><span class="cov0" title="0">{
+                var ferr = jsonFile.Close()
+                if ferr != nil </span><span class="cov0" title="0">{
+                        log.Printf("can't close file: %v", ferr)
+                }</span>
+        }()
+
+        // read our opened jsonFile as a byte array.
+        <span class="cov0" title="0">byteValue, _ := ioutil.ReadAll(jsonFile)
+        // we initialize our data array
+        var fileDataSlice model.Data
+        // we unmarshal our byteArray which contains our
+        // jsonFile's content into 'fileDataSlice' which we defined above
+        err = json.Unmarshal(byteValue, &amp;fileDataSlice)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        // quickly populate our file map
+
+        // we iterate through array and make map key [UID:shortlink]=filedata struct
+        <span class="cov0" title="0">for _, datael := range fileDataSlice.Data </span><span class="cov0" title="0">{
+                key := datael.UID + ":" + datael.Shorturl
+                fr.fileData[key] = datael
+        }</span>
+
+        <span class="cov0" title="0">return nil</span>
+}
+
+// Get - get data string from repo
+// uid:key - user:key
+func (fr *FileRepo) Get(uid, key string, su bool) (model.DataEl, error) <span class="cov8" title="1">{
+        fr.RWMutex.RLock() // read lock only
+        defer fr.RWMutex.RUnlock()
+        // get data needed
+        // retrieve dat string
+        key = uid + ":" + key
+        if datael, ok := fr.fileData[key]; ok </span><span class="cov8" title="1">{
+                if datael.Active == 0 </span><span class="cov0" title="0">{
+                        // deleted already
+                        err := fmt.Errorf("link deleted already")
+                        return model.DataEl{}, err
+                }</span>
+
+                <span class="cov8" title="1">return datael, nil</span>
+
+        }
+        <span class="cov0" title="0">err := fmt.Errorf("No such link")
+        return model.DataEl{}, err</span>
+}
+
+// GetUn - find unique shortlink in storage for shortopen api method
+// + update redir count (protected by lock)
+func (fr *FileRepo) GetUn(shortlink string) (string, error) <span class="cov8" title="1">{
+        fr.RWMutex.Lock()
+        defer fr.RWMutex.Unlock()
+        // get data needed
+        // retrieve dat string
+        for key, datael := range fr.fileData </span><span class="cov8" title="1">{
+                //strip user: from key
+                //check if we have match
+                keys := strings.Split(key, ":")
+                if keys[1] == shortlink </span><span class="cov8" title="1">{
+                        //found unique link
+                        if datael.Active == 0 </span><span class="cov0" title="0">{
+                                // deleted already
+                                err := fmt.Errorf("link deleted already")
+                                return "", err
+                        }</span>
+                        // update redirs count save it and return it
+                        <span class="cov8" title="1">datael.Redirs++
+                        fr.fileData[key] = datael
+                        // changes needs to be flushed to file
+                        err := fr.DumpMapToFile()
+                        if err != nil </span><span class="cov0" title="0">{
+                                return "", err
+                        }</span>
+                        <span class="cov8" title="1">return datael.URL, nil</span>
+                }
+        }
+
+        <span class="cov0" title="0">err := fmt.Errorf("No such link")
+        return "", err</span>
+}
+
+// Put - store data string to repo
+func (fr *FileRepo) Put(uid, key string, value model.DataEl, su bool) error <span class="cov8" title="1">{
+        fr.RWMutex.Lock()
+        defer fr.RWMutex.Unlock()
+        /*        if _, ok := fr.fileData[key]; !ok {
+                // key already exists
+                err := fmt.Errorf("link %s dont exist", key)
+                return err
+        }*/
+        key = uid + ":" + key
+
+        fr.fileData[key] = value
+        // changes needs to be flushed to file
+        err := fr.DumpMapToFile()
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// Del - mark Active = 0 to 'delete'
+func (fr *FileRepo) Del(uid, key string, su bool) error <span class="cov8" title="1">{
+        fr.RWMutex.Lock()
+        defer fr.RWMutex.Unlock()
+        key = uid + ":" + key
+        if datael, ok := fr.fileData[key]; ok </span><span class="cov8" title="1">{
+                datael.Active = 0
+                fr.fileData[key] = datael
+                // dump data to file straight away
+                err := fr.DumpMapToFile()
+                if err != nil </span><span class="cov0" title="0">{
+                        return err
+                }</span>
+                <span class="cov8" title="1">return nil</span>
+        }
+        <span class="cov0" title="0">err := fmt.Errorf("delete error key %s don't exist", key)
+        return err</span>
+}
+
+// List - list all keys for this user uid
+func (fr *FileRepo) List(uid string) ([]string, error) <span class="cov8" title="1">{
+        fr.RWMutex.RLock()
+        defer fr.RWMutex.RUnlock()
+        // get data needed
+        // retrieve list of keys as []string
+        var keys []string
+        for _, val := range fr.fileData </span><span class="cov8" title="1">{
+                if val.Active == 1 &amp;&amp; val.UID == uid </span><span class="cov8" title="1">{
+                        keys = append(keys, val.Shorturl)
+                }</span>
+        }
+        <span class="cov8" title="1">return keys, nil</span>
+}
+
+// GetAll заглушки
+func (fr *FileRepo) GetAll() (model.Data, error) <span class="cov0" title="0">{
+        return model.Data{}, nil
+}</span>
+
+// PayUser заглушки
+func (fr *FileRepo) PayUser(uidA, uidB, amount string) error <span class="cov0" title="0">{
+        return nil
+}</span>
+
+// FindSuperUser заглушки
+func (fr *FileRepo) FindSuperUser() (string, error) <span class="cov0" title="0">{
+        return "", nil
+}</span>
+
+// PutUser заглушки
+func (fr *FileRepo) PutUser(value model.User) (string, error) <span class="cov0" title="0">{
+        return "", nil
+}</span>
+
+// DelUser заглушки
+func (fr *FileRepo) DelUser(uid string) error <span class="cov0" title="0">{
+        return nil
+}</span>
+
+// GetUser заглушки
+func (fr *FileRepo) GetUser(uid string) (model.User, error) <span class="cov0" title="0">{
+        return model.User{}, nil
+}</span>
+
+// AddUser заглушки
+func (fr *FileRepo) AddUser(value model.User) (string, error) <span class="cov0" title="0">{
+        return "", nil
+}</span>
+
+// CloseConn заглушки
+func (fr *FileRepo) CloseConn() {<span class="cov0" title="0">
+
+}</span>
+</pre>
+
+		<pre class="file" id="file5" style="display: none">package repository
+
+import (
+        "context"
+        "crypto/sha256"
+        "fmt"
+        "log"
+        "net"
+        "strconv"
+        "time"
+
+        "github.com/jackc/pgx/v4"
+        "github.com/jackc/pgx/v4/pgxpool"
+        "github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/model"
+)
+
+type tUserRole string
+
+// Constants for type user rolr pg
+const (
+        SUPERUSER tUserRole = "SUPERUSER"
+        CREATOR   tUserRole = "CREATOR"
+        USER      tUserRole = "USER"
+)
+
+// User - go struct of pg db
+type User struct {
+        ID               int       `db:"id"`
+        UID              string    `db:"uid"`
+        Name             string    `db:"name"`
+        Passwd           string    `db:"passwd"`
+        Email            string    `db:"email"`
+        CreatedOn        time.Time `db:"created_on"`
+        LastLogin        time.Time `db:"last_login"`
+        IsActive         bool      `db:"is_active"`
+        UserRole         tUserRole `db:"user_role"`
+        IsBalanceBlocked bool      `db:"is_balance_blocked"`
+        Balance          string    `db:"balance"`
+}
+
+// UserData - go struct of pg db - related to user data contains all shortlink url counters
+type UserData struct {
+        ID       int       `db:"id"`
+        UserID   int       `db:"user_id"`
+        UID      string    `db:"uid"`
+        URL      string    `db:"url"`
+        ShortURL string    `db:"short_url"`
+        DateTime time.Time `db:"date_time"`
+        IsActive bool      `db:"is_active"`
+        Redirs   int       `db:"redirs"`
+}
+
+// UsersTransactions - go struct of pg db - related to transactions b/w users
+type UsersTransactions struct {
+        ID          int       `db:"id"`
+        DateTime    time.Time `db:"date_time"`
+        UserIDFrom  int       `db:"user_id_from"`
+        UserIDTo    int       `db:"user_id_to"`
+        Amount      string    `db:"amount"`
+        Description string    `db:"description"`
+        Successful  bool      `db:"successful"`
+}
+
+// PgRepo init pg go struct holds connex to db
+type PgRepo struct {
+        URL    string
+        CTX    context.Context
+        DBPool *pgxpool.Pool
+}
+
+// GetAllUsers - suid method to get all users data
+func (pgr *PgRepo) GetAllUsers() (model.Users, error) <span class="cov0" title="0">{
+
+        grGetAllUsers := func(ctx context.Context, dbpool *pgxpool.Pool) ([]User, error) </span><span class="cov0" title="0">{
+                const sql = `
+                        SELECT id, uid, name, passwd, email, is_active, created_on, balance::varchar,
+                                        last_login, is_balance_blocked, user_role FROM users ORDER BY user_role, name;
+                        `
+                rows, err := dbpool.Query(ctx, sql)
+
+                if err != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("failed to query data: %w", err) // Вызов Close нужен, чтобы вернуть соединение в пул
+                }</span>
+                <span class="cov0" title="0">defer rows.Close()
+
+                var users []User
+
+                for rows.Next() </span><span class="cov0" title="0">{
+                        var user User
+
+                        err = rows.Scan(&amp;user.ID,
+                                &amp;user.UID,
+                                &amp;user.Name,
+                                &amp;user.Passwd,
+                                &amp;user.Email,
+                                &amp;user.IsActive,
+                                &amp;user.CreatedOn,
+                                &amp;user.Balance,
+                                &amp;user.LastLogin,
+                                &amp;user.IsBalanceBlocked,
+                                &amp;user.UserRole,
+                        )
+
+                        if err != nil </span><span class="cov0" title="0">{
+                                return nil, fmt.Errorf("failed to scan row: %w", err)
+                        }</span>
+
+                        <span class="cov0" title="0">users = append(users, user)</span>
+                }
+
+                <span class="cov0" title="0">if rows.Err() != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("failed to read response: %w", rows.Err())
+                }</span>
+
+                <span class="cov0" title="0">return users, nil</span>
+        }
+
+        <span class="cov0" title="0">users, err := grGetAllUsers(pgr.CTX, pgr.DBPool)
+        if err != nil </span><span class="cov0" title="0">{
+                return model.Users{}, err
+        }</span>
+
+        //reload pg users to model user (under 'Data' array-struct)
+        <span class="cov0" title="0">var allusers model.Users
+        for _, pguser := range users </span><span class="cov0" title="0">{
+                //adjust field modelrole db - type , api - string
+                /*
+                        var modelrole string
+                        switch pguser.UserRole {
+                        case SUPERUSER:
+                                modelrole = "SUPERUSER"
+                        case USER:
+                                modelrole = "USER"
+                        case CREATOR:
+                                modelrole = "CREATOR"
+                        }*/
+                //modelrole := string(pguser.UserRole)
+                modeluser := model.User{UID: pguser.UID,
+                        Name:    pguser.Name,
+                        Email:   pguser.Email,
+                        Role:    string(pguser.UserRole),
+                        Balance: pguser.Balance,
+                }
+
+                allusers.Data = append(allusers.Data, modeluser)
+
+        }</span>
+        <span class="cov0" title="0">return allusers, nil</span>
+}
+
+// AuthUser - check user&amp;password ie autheticate and return UID if successful
+func (pgr *PgRepo) AuthUser(userAuth model.User) (string, error) <span class="cov0" title="0">{
+        // get user UID by name, password from users if exists return get UID
+        // and update lastlogin
+        const sql = `
+        SELECT UID, name, passwd FROM users
+                WHERE name = $1 AND passwd = $2;
+        `
+        rows, err := pgr.DBPool.Query(pgr.CTX, sql,
+                userAuth.Name,
+                userAuth.Passwd,
+        )
+
+        var user User
+
+        if err != nil </span><span class="cov0" title="0">{
+                return "", fmt.Errorf("failed to query data: %w", err) // Вызов Close нужен, чтобы вернуть соединение в пул
+        }</span>
+
+        <span class="cov0" title="0">defer rows.Close()
+
+        for rows.Next() </span><span class="cov0" title="0">{
+                err = rows.Scan(&amp;user.UID, &amp;user.Name, &amp;user.Passwd)
+                if err != nil </span><span class="cov0" title="0">{
+                        return "", fmt.Errorf("failed to scan row: %w", err)
+                }</span>
+        }
+
+        <span class="cov0" title="0">if rows.Err() != nil </span><span class="cov0" title="0">{
+                return "", fmt.Errorf("failed to read response: %w", rows.Err())
+        }</span>
+
+        <span class="cov0" title="0">if userAuth.Name == user.Name &amp;&amp; userAuth.Passwd == user.Passwd </span><span class="cov0" title="0">{
+                // update lastlogin
+                const sql = `
+                UPDATE users SET last_login = current_timestamp
+                        WHERE UID = $1;
+        `
+                _, err = pgr.DBPool.Exec(pgr.CTX, sql, user.UID)
+
+                if err != nil </span><span class="cov0" title="0">{
+                        return "", fmt.Errorf("failed to update userdata: %w", err)
+                }</span>
+
+                <span class="cov0" title="0">return user.UID, nil</span>
+        }
+
+        <span class="cov0" title="0">return "", nil</span>
+}
+
+// WhoAmI - driver id 1-pg 0-file
+func (pgr *PgRepo) WhoAmI() uint64 <span class="cov0" title="0">{
+        return 1
+}</span>
+
+// CloseConn - close db connex when server quit
+func (pgr *PgRepo) CloseConn() <span class="cov8" title="1">{
+        pgr.DBPool.Close()
+}</span>
+
+// New Init of pg driver
+func (pgr *PgRepo) New(filename string) RepoIf <span class="cov8" title="1">{
+        ctx := context.Background()
+        // Строка для подключения к базе данных
+        url := filename //"postgres://postuser:postpassword@192.168.1.204:5432/a4"
+        cfg, err := pgxpool.ParseConfig(url)
+        if err != nil </span><span class="cov0" title="0">{
+                log.Fatal(err)
+        }</span>
+        // Pool соединений обязательно ограничивать сверху
+        <span class="cov8" title="1">cfg.MaxConns = 8
+        cfg.MinConns = 4
+        // HealthCheckPeriod - частота пингования соединения с Postgres
+        cfg.HealthCheckPeriod = 1 * time.Minute
+        // MaxConnLifetime - сколько времени будет жить соединение.
+        //можно устанавливать большие значения
+        cfg.MaxConnLifetime = 24 * time.Hour
+        // MaxConnIdleTime - время жизни неиспользуемого соединения,
+        cfg.MaxConnIdleTime = 30 * time.Minute
+        // ConnectTimeout устанавливает ограничение по времени
+        // на весь процесс установки соединения и аутентификации.
+        cfg.ConnConfig.ConnectTimeout = 1 * time.Second
+        // Лимиты в net.Dialer позволяют достичь предсказуемого
+        // поведения в случае обрыва сети.
+        cfg.ConnConfig.DialFunc = (&amp;net.Dialer{
+                KeepAlive: cfg.HealthCheckPeriod,
+                // Timeout на установку соединения гарантирует,
+                // что не будет зависаний при попытке установить соединение.
+                Timeout: cfg.ConnConfig.ConnectTimeout,
+        }).DialContext
+        // pgx предоставляет набор адаптеров для популярных логеров
+        //это позволяет организовать сбор ошибок при работе с базой
+        //@see: https://github.com/jackc/pgx/tree/master/log
+        // cfg.ConnConfig = zerologadapter.NewLogger(logger)
+        dbpool, err := pgxpool.ConnectConfig(ctx, cfg)
+        if err != nil </span><span class="cov0" title="0">{
+                log.Fatal(err)
+        }</span>
+
+        <span class="cov8" title="1">return &amp;PgRepo{CTX: ctx,
+                URL:    url,
+                DBPool: dbpool,
+        }</span>
+}
+
+// Get - get data string from pg repo
+// uid - user uid, key - shortlink
+// if uid == suid (SUPERUSER uid) - retreives information despite original uid
+func (pgr *PgRepo) Get(uid, key string, su bool) (model.DataEl, error) <span class="cov8" title="1">{
+
+        grGet := func(ctx context.Context, dbpool *pgxpool.Pool, uid, shorturl string, su bool) (UserData, error) </span><span class="cov8" title="1">{
+                const sql = `
+        SELECT id, user_id, url, redirs, is_active, short_url, date_time, uid FROM users_data
+            WHERE uid = $1 AND short_url = $2;
+        `
+                const sqlsu = `
+        SELECT id, user_id, url, redirs, is_active, short_url, date_time, uid FROM users_data
+            WHERE short_url = $1;
+        `
+                var rows pgx.Rows
+                var err error
+
+                if su </span><span class="cov0" title="0">{
+                        rows, err = dbpool.Query(ctx, sqlsu, shorturl)
+                }</span> else<span class="cov8" title="1"> {
+                        rows, err = dbpool.Query(ctx, sql, uid, shorturl)
+                }</span>
+
+                <span class="cov8" title="1">var userdata UserData
+
+                if err != nil </span><span class="cov0" title="0">{
+                        return UserData{}, fmt.Errorf("failed to query data: %w", err) // Вызов Close нужен, чтобы вернуть соединение в пул
+                }</span>
+                <span class="cov8" title="1">defer rows.Close()
+
+                for rows.Next() </span><span class="cov8" title="1">{
+                        err = rows.Scan(&amp;userdata.ID,
+                                &amp;userdata.UserID,
+                                &amp;userdata.URL,
+                                &amp;userdata.Redirs,
+                                &amp;userdata.IsActive,
+                                &amp;userdata.ShortURL,
+                                &amp;userdata.DateTime,
+                                &amp;userdata.UID,
+                        )
+
+                        if err != nil </span><span class="cov0" title="0">{
+                                return UserData{}, fmt.Errorf("failed to scan row: %w", err)
+                        }</span>
+                }
+
+                <span class="cov8" title="1">if rows.Err() != nil </span><span class="cov0" title="0">{
+                        return UserData{}, fmt.Errorf("failed to read response: %w", rows.Err())
+                }</span>
+
+                <span class="cov8" title="1">return userdata, nil</span>
+        }
+
+        <span class="cov8" title="1">var userdata UserData
+        var err error
+        suid, _ := pgr.FindSuperUser()
+        if suid == uid </span><span class="cov0" title="0">{
+                userdata, err = grGet(pgr.CTX, pgr.DBPool, uid, key, true)
+        }</span> else<span class="cov8" title="1"> {
+                userdata, err = grGet(pgr.CTX, pgr.DBPool, uid, key, false)
+        }</span>
+
+        <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
+                return model.DataEl{}, err
+        }</span>
+
+        //adjust field Active db - bool , api - int
+        <span class="cov8" title="1">var activeInt = 0
+        if userdata.IsActive </span><span class="cov8" title="1">{
+                activeInt = 1
+        }</span>
+
+        <span class="cov8" title="1">return model.DataEl{UID: userdata.UID,
+                URL:      userdata.URL,
+                Shorturl: userdata.ShortURL,
+                Datetime: userdata.DateTime,
+                Active:   activeInt,
+                Redirs:   userdata.Redirs}, nil</span>
+}
+
+// Put - store data string to pg repo
+// uid - user uid, key - shortlink
+// if uid == suid (SUPERUSER uid) - updates repo information despite original uid
+func (pgr *PgRepo) Put(uid, key string, value model.DataEl, su bool) error <span class="cov8" title="1">{
+
+        grPut := func(ctx context.Context, dbpool *pgxpool.Pool, uid, key string, userdata *UserData) error </span><span class="cov8" title="1">{
+                const sql = `
+        INSERT INTO users_data (user_id,url,short_url,redirs,date_time,uid)
+    VALUES ((SELECT id FROM users WHERE uid = $1),$2,$3,$4,$5,$1)
+        ON CONFLICT ON CONSTRAINT users_data_shorturl_user_id_keys
+            DO UPDATE SET url = excluded.url,
+                          redirs = excluded.redirs,
+                          date_time = excluded.date_time,
+                          uid = excluded.uid;
+        `
+                _, err := dbpool.Exec(ctx, sql,
+                        uid,
+                        userdata.URL,
+                        userdata.ShortURL,
+                        userdata.Redirs,
+                        userdata.DateTime,
+                )
+                if err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("failed to add/change userdata: %w", err)
+                }</span>
+
+                <span class="cov8" title="1">return nil</span>
+        }
+
+        //adjust type bool int
+        /*
+                var isActiveBool = false
+                if value.Active == 1 {
+                        isActiveBool = true
+                }*/
+
+        //var isActiveBool = (value.Active == 1)
+
+        <span class="cov8" title="1">userdata := UserData{UID: value.UID,
+                URL:      value.URL,
+                ShortURL: value.Shorturl,
+                DateTime: value.Datetime,
+                IsActive: value.Active == 1, // most sugarly way of transforming bw int to bool
+                Redirs:   value.Redirs,
+        }
+
+        err := grPut(pgr.CTX, pgr.DBPool, uid, key, &amp;userdata)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// Del - delete data entity from pg repo
+// uid - user uid, key - shortlink
+// if uid == suid (SUPERUSER uid) - updates repo information despite original uid
+func (pgr *PgRepo) Del(uid, key string, su bool) error <span class="cov0" title="0">{
+
+        grDel := func(ctx context.Context, dbpool *pgxpool.Pool, uid, shorturl string, su bool) error </span><span class="cov0" title="0">{
+                const sql = `
+        DELETE FROM users_data
+            WHERE uid = $1 and short_url = $2;
+        `
+                const sqlsu = `
+        DELETE FROM users_data
+            WHERE short_url = $1;
+        `
+                var err error
+                if su </span><span class="cov0" title="0">{
+                        _, err = dbpool.Exec(ctx, sqlsu,
+                                shorturl,
+                        )
+
+                }</span> else<span class="cov0" title="0"> {
+                        _, err = dbpool.Exec(ctx, sql,
+                                uid,
+                                shorturl,
+                        )
+                }</span>
+
+                <span class="cov0" title="0">if err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("failed to del userdata: %w", err)
+                }</span>
+
+                <span class="cov0" title="0">return nil</span>
+        }
+
+        <span class="cov0" title="0">suid, _ := pgr.FindSuperUser()
+        var err error
+        if suid == uid </span><span class="cov0" title="0">{
+                err = grDel(pgr.CTX, pgr.DBPool, uid, key, true)
+        }</span> else<span class="cov0" title="0"> {
+                err = grDel(pgr.CTX, pgr.DBPool, uid, key, false)
+        }</span>
+
+        <span class="cov0" title="0">if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov0" title="0">return nil</span>
+}
+
+// List - list all keys for this user uid
+func (pgr *PgRepo) List(uid string) ([]string, error) <span class="cov0" title="0">{
+
+        grList := func(ctx context.Context, dbpool *pgxpool.Pool, uid string) ([]string, error) </span><span class="cov0" title="0">{
+                const sql = `
+        SELECT short_url FROM users_data
+                WHERE uid = $1;
+        `
+                rows, err := dbpool.Query(ctx, sql, uid)
+
+                var usersShortURL []string
+
+                if err != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("failed to query data: %w", err) // Вызов Close нужен, чтобы вернуть соединение в пул
+                }</span>
+                <span class="cov0" title="0">defer rows.Close()
+
+                for rows.Next() </span><span class="cov0" title="0">{
+                        var userShortURL string
+
+                        err = rows.Scan(&amp;userShortURL)
+
+                        if err != nil </span><span class="cov0" title="0">{
+                                return nil, fmt.Errorf("failed to scan row: %w", err)
+                        }</span>
+
+                        <span class="cov0" title="0">usersShortURL = append(usersShortURL, userShortURL)</span>
+                }
+
+                <span class="cov0" title="0">if rows.Err() != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("failed to read response: %w", rows.Err())
+                }</span>
+
+                <span class="cov0" title="0">return usersShortURL, nil</span>
+        }
+
+        <span class="cov0" title="0">links, err := grList(pgr.CTX, pgr.DBPool, uid)
+        if err != nil </span><span class="cov0" title="0">{
+                return nil, err
+        }</span>
+
+        <span class="cov0" title="0">return links, nil</span>
+}
+
+// TransactionFunc - inline func for a transasction выноска из inTx
+type TransactionFunc func(context.Context, pgx.Tx) (string, error)
+
+// inTx - transaction func
+func inTx(ctx context.Context, dbpool *pgxpool.Pool, f TransactionFunc) (string, error) <span class="cov8" title="1">{
+        //Begin;
+        transaction, err := dbpool.Begin(ctx)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        // launch function
+        <span class="cov8" title="1">URL, err1 := f(ctx, transaction)
+        if err1 != nil </span><span class="cov0" title="0">{
+                rbErr := transaction.Rollback(ctx)
+                if rbErr != nil </span><span class="cov0" title="0">{
+                        log.Print(rbErr)
+                }</span>
+                <span class="cov0" title="0">return "", err1</span>
+        }
+
+        //Commit;
+        <span class="cov8" title="1">err = transaction.Commit(ctx)
+        if err != nil </span><span class="cov0" title="0">{
+                rbErr := transaction.Rollback(ctx)
+                if rbErr != nil </span><span class="cov0" title="0">{
+                        log.Print(rbErr)
+                }</span>
+                <span class="cov0" title="0">return "", err</span>
+        }
+        <span class="cov8" title="1">return URL, nil</span>
+}
+
+// GetUn - find unique shortlink in storage for shortopen api method
+// + update redir count (protected by lock)
+func (pgr *PgRepo) GetUn(shortlink string) (string, error) <span class="cov0" title="0">{
+
+        grGetUn := func(ctx context.Context, dbpool *pgxpool.Pool, shorturl string) (string, error) </span><span class="cov0" title="0">{
+
+                URL, err := inTx(ctx, dbpool, func(ctx context.Context, tx pgx.Tx) (string, error) </span><span class="cov0" title="0">{
+                        const sql1 = `SELECT url, user_id from users_data
+                                                    WHERE short_url = $1;
+                        `
+                        rows, err := tx.Query(ctx, sql1, shorturl)
+                        if err != nil </span><span class="cov0" title="0">{
+                                return "", err
+                        }</span>
+                        <span class="cov0" title="0">var URL string
+                        var userID int
+
+                        for rows.Next() </span><span class="cov0" title="0">{
+                                err = rows.Scan(&amp;URL, &amp;userID)
+                                if err != nil </span><span class="cov0" title="0">{
+                                        return "", err
+                                }</span>
+                        }
+
+                        <span class="cov0" title="0">const sql2 = `
+                        UPDATE users_data
+                            SET redirs = redirs + 1
+                                WHERE user_id = $1 AND short_url = $2;
+                        `
+                        _, err = tx.Exec(ctx, sql2, userID, shorturl)
+                        if err != nil </span><span class="cov0" title="0">{
+                                return "", err
+                        }</span>
+
+                        <span class="cov0" title="0">return URL, nil</span>
+                })
+
+                <span class="cov0" title="0">if err != nil </span><span class="cov0" title="0">{
+                        return "", err
+                }</span>
+
+                <span class="cov0" title="0">return URL, nil</span>
+        }
+
+        <span class="cov0" title="0">URL, err := grGetUn(pgr.CTX, pgr.DBPool, shortlink)
+
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+
+        <span class="cov0" title="0">return URL, nil</span>
+}
+
+// additional methods for 'improved' interface
+// user crud
+
+// MyHash256 - generate hash SHA
+func MyHash256(seq string) string <span class="cov8" title="1">{
+        data := []byte(seq)
+        hash := sha256.Sum256(data)
+        return fmt.Sprintf("%x", hash[:15])
+}</span>
+
+// PutUser new user add or update
+func (pgr *PgRepo) PutUser(value model.User) (string, error) <span class="cov8" title="1">{
+
+        grAddUser := func(ctx context.Context, dbpool *pgxpool.Pool, user *User) (int, error) </span><span class="cov8" title="1">{
+                const sql = `
+        INSERT INTO users (uid, name, passwd, email, user_role, created_on, last_login, balance)
+            VALUES ($1, $2, $3, $4, $5, current_timestamp, current_timestamp, $6::numeric)
+                ON CONFLICT ON CONSTRAINT users_uid_key
+                DO UPDATE SET last_login = excluded.last_login,
+                      balance = excluded.balance,
+                      user_role = excluded.user_role
+                returning id;
+        `
+                //passwd = excluded.passwd,
+                var id int
+                err := dbpool.QueryRow(ctx, sql,
+                        user.UID,
+                        user.Name,
+                        user.Passwd,
+                        user.Email,
+                        user.UserRole,
+                        user.Balance,
+                ).Scan(&amp;id)
+                if err != nil </span><span class="cov0" title="0">{
+                        return 0, fmt.Errorf("failed to add user: %w", err)
+                }</span>
+
+                <span class="cov8" title="1">return id, nil</span>
+        }
+        //  generate hash as uid
+        <span class="cov8" title="1">uid := MyHash256(value.Name + value.Email)
+        passwd := value.Passwd
+        var role tUserRole
+        switch value.Role </span>{
+        case "USER":<span class="cov8" title="1">
+                role = USER</span>
+        case "CREATOR":<span class="cov0" title="0">
+                role = CREATOR</span>
+        case "SUPERUSER":<span class="cov0" title="0">
+                role = SUPERUSER</span>
+        }
+
+        <span class="cov8" title="1">user := User{
+                UID:              uid,
+                Name:             value.Name,
+                Passwd:           passwd,
+                Email:            value.Email,
+                IsActive:         true,
+                UserRole:         role,
+                IsBalanceBlocked: false,
+                Balance:          value.Balance,
+        }
+
+        _, err := grAddUser(pgr.CTX, pgr.DBPool, &amp;user)
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+        <span class="cov8" title="1">return uid, nil</span>
+}
+
+// GetUser get user and put it in model.User struct
+func (pgr *PgRepo) GetUser(uid string) (model.User, error) <span class="cov8" title="1">{
+
+        // get user data
+        grGetUser := func(ctx context.Context, dbpool *pgxpool.Pool, uid string) (User, error) </span><span class="cov8" title="1">{
+                const sql = `
+        SELECT id, uid, name, passwd, email, is_active, created_on, balance::varchar, last_login, is_balance_blocked, user_role FROM users
+            WHERE uid = $1;
+        `
+                rows, err := dbpool.Query(ctx, sql, uid)
+
+                var user User
+
+                if err != nil </span><span class="cov0" title="0">{
+                        return User{}, fmt.Errorf("failed to query user: %w", err)
+                }</span>
+                <span class="cov8" title="1">defer rows.Close()
+
+                for rows.Next() </span><span class="cov8" title="1">{
+
+                        err = rows.Scan(&amp;user.ID,
+                                &amp;user.UID,
+                                &amp;user.Name,
+                                &amp;user.Passwd,
+                                &amp;user.Email,
+                                &amp;user.IsActive,
+                                &amp;user.CreatedOn,
+                                &amp;user.Balance,
+                                &amp;user.LastLogin,
+                                &amp;user.IsBalanceBlocked,
+                                &amp;user.UserRole,
+                        )
+
+                        if err != nil </span><span class="cov0" title="0">{
+                                return User{}, fmt.Errorf("failed to scan row: %w", err)
+                        }</span>
+
+                }
+
+                <span class="cov8" title="1">if rows.Err() != nil </span><span class="cov0" title="0">{
+                        return User{}, fmt.Errorf("failed to read response: %w", rows.Err())
+                }</span>
+
+                <span class="cov8" title="1">return user, nil</span>
+        }
+
+        <span class="cov8" title="1">pguser, err := grGetUser(pgr.CTX, pgr.DBPool, uid)
+        if err != nil </span><span class="cov0" title="0">{
+                return model.User{}, err
+        }</span>
+
+        //var modelrole string
+
+        //modelrole := string(pguser.UserRole)
+
+        /*
+                switch pguser.UserRole {
+                case SUPERUSER:
+                        modelrole = "SUPERUSER"
+                case USER:
+                        modelrole = "USER"
+                case CREATOR:
+                        modelrole = "CREATOR"
+                }
+        */
+        <span class="cov8" title="1">apiuser := model.User{Name: pguser.Name,
+                Email:   pguser.Email,
+                Role:    string(pguser.UserRole),
+                Balance: pguser.Balance,
+        }
+
+        return apiuser, nil</span>
+}
+
+// DelUser delete user
+// name - user name, email - email  = unique combination for user
+func (pgr *PgRepo) DelUser(uid string) error <span class="cov8" title="1">{
+        // delete user (and anything related to him)
+        grDelUser := func(ctx context.Context, dbpool *pgxpool.Pool, uid string) error </span><span class="cov8" title="1">{
+                const sql = `
+        DELETE FROM users
+                WHERE uid = $1
+        `
+                _, err := dbpool.Exec(ctx, sql, uid)
+                if err != nil </span><span class="cov0" title="0">{
+                        return fmt.Errorf("failed to del user: %w", err)
+                }</span>
+                // todo when delete user we need to put all its transactions to log for an archive
+                <span class="cov8" title="1">return nil</span>
+        }
+
+        <span class="cov8" title="1">err := grDelUser(pgr.CTX, pgr.DBPool, uid)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+
+        <span class="cov8" title="1">return nil</span>
+}
+
+// payments
+
+// FindSuperUser - gets suid of superuser
+func (pgr *PgRepo) FindSuperUser() (string, error) <span class="cov8" title="1">{
+        grFindSU := func(ctx context.Context, dbpool *pgxpool.Pool) (string, error) </span><span class="cov8" title="1">{
+                // find superuser - must be one superuser in this game
+                const sql1 = `SELECT uid from users
+                                        WHERE user_role = 'SUPERUSER';
+                        `
+                rows, err1 := dbpool.Query(ctx, sql1)
+
+                if err1 != nil </span><span class="cov0" title="0">{
+                        return "", err1
+                }</span>
+                <span class="cov8" title="1">var suid string
+
+                for rows.Next() </span><span class="cov8" title="1">{
+                        err := rows.Scan(&amp;suid)
+                        if err != nil </span><span class="cov0" title="0">{
+                                return "", err
+                        }</span>
+                }
+                <span class="cov8" title="1">return suid, nil</span>
+        }
+        <span class="cov8" title="1">suid, err := grFindSU(pgr.CTX, pgr.DBPool)
+
+        if err != nil </span><span class="cov0" title="0">{
+                return "", err
+        }</span>
+
+        <span class="cov8" title="1">return suid, nil</span>
+}
+
+// PayUser - pay amount for uidA to uidB as transaction
+func (pgr *PgRepo) PayUser(uidA, uidB, amount string) error <span class="cov8" title="1">{
+        // pay money transaction b/w users
+        grPayUser := func(ctx context.Context, dbpool *pgxpool.Pool, uidA, uidB string, amount string) error </span><span class="cov8" title="1">{
+
+                const sql = `
+                INSERT INTO users_transactions (date_time,  user_id_from,  user_id_to, amount, description, successful )
+                VALUES (current_timestamp,
+                (select id from users where uid = $1),
+                (select id from users where uid = $2),
+                $3::numeric,
+                $4,
+                FALSE)
+                RETURNING id;
+        `
+                var transID int
+                descrText := "Payment +" + amount + " from " + uidA + " for " + uidB
+                err := dbpool.QueryRow(ctx, sql, uidA, uidB, amount, descrText).Scan(&amp;transID)
+                if err != nil </span><span class="cov0" title="0">{
+                        return err
+                }</span>
+
+                <span class="cov8" title="1">_, err = inTx(ctx, dbpool, func(ctx context.Context, tx pgx.Tx) (string, error) </span><span class="cov8" title="1">{
+
+                        const sql1 = `SELECT balance::varchar, is_balance_blocked from users
+                                                    WHERE uid = $1;
+                        `
+                        rows, err1 := tx.Query(ctx, sql1, uidA)
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                return "", err1
+                        }</span>
+                        <span class="cov8" title="1">var prebalanceA float64
+                        var preisBlockedA bool
+
+                        for rows.Next() </span><span class="cov8" title="1">{
+                                var balance string
+                                _ = rows.Scan(&amp;balance, &amp;preisBlockedA)
+                                prebalanceA, _ = strconv.ParseFloat(balance, 64)
+                        }</span>
+
+                        <span class="cov8" title="1">if prebalanceA &lt; 0 || preisBlockedA </span><span class="cov0" title="0">{
+                                err1 = fmt.Errorf("balance uidA is less 0 or blocked")
+                                return "", err1
+                        }</span>
+
+                        // uidA pays uidB amount
+                        <span class="cov8" title="1">const sql2 = `
+                UPDATE users SET balance = balance + ($1::numeric) where uid = $2;
+                `
+                        _, err1 = tx.Exec(ctx, sql2, amount, uidB)
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                return "", err1
+                        }</span>
+                        <span class="cov8" title="1">_, err1 = tx.Exec(ctx, sql2, "-"+amount, uidA)
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                return "", err1
+                        }</span>
+
+                        <span class="cov8" title="1">const sql3 = `
+                UPDATE users_transactions
+                        SET successful = TRUE
+                                WHERE id = $1;
+                `
+                        _, err1 = tx.Exec(ctx, sql3, transID)
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                return "", err1
+                        }</span>
+
+                        //post update is_balance_blocked of these users
+                        <span class="cov8" title="1">const sql4 = `SELECT balance::varchar FROM users
+                                                    WHERE uid = $1;
+                        `
+                        rows, err1 = tx.Query(ctx, sql4, uidA)
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                return "", err1
+                        }</span>
+                        <span class="cov8" title="1">var balanceA float64
+
+                        for rows.Next() </span><span class="cov8" title="1">{
+                                var balance string
+                                _ = rows.Scan(&amp;balance)
+                                balanceA, _ = strconv.ParseFloat(balance, 64)
+                        }</span>
+
+                        <span class="cov8" title="1">const sql5 = `
+                        UPDATE users
+                                SET is_balance_blocked = TRUE
+                                        WHERE uid = $1;
+                        `
+                        if balanceA &lt; 0 </span><span class="cov0" title="0">{
+                                // update user A
+                                _, err1 = tx.Exec(ctx, sql5, uidA)
+                                if err1 != nil </span><span class="cov0" title="0">{
+                                        return "", err1
+                                }</span>
+                        }
+
+                        <span class="cov8" title="1">rows, err1 = tx.Query(ctx, sql4, uidB)
+                        if err1 != nil </span><span class="cov0" title="0">{
+                                return "", err1
+                        }</span>
+                        <span class="cov8" title="1">var balanceB float64
+
+                        for rows.Next() </span><span class="cov8" title="1">{
+                                var balance string
+                                _ = rows.Scan(&amp;balance)
+                                balanceB, _ = strconv.ParseFloat(balance, 64)
+                        }</span>
+
+                        <span class="cov8" title="1">if balanceB &lt; 0 </span><span class="cov0" title="0">{
+                                // update user B
+                                _, err1 = tx.Exec(ctx, sql5, uidB)
+                                if err1 != nil </span><span class="cov0" title="0">{
+                                        return "", err1
+                                }</span>
+                        }
+
+                        <span class="cov8" title="1">return "", nil</span>
+                })
+
+                <span class="cov8" title="1">if err != nil </span><span class="cov0" title="0">{
+                        return err
+                }</span>
+
+                <span class="cov8" title="1">return nil</span>
+        }
+
+        <span class="cov8" title="1">err := grPayUser(pgr.CTX, pgr.DBPool, uidA, uidB, amount)
+        if err != nil </span><span class="cov0" title="0">{
+                return err
+        }</span>
+        <span class="cov8" title="1">return nil</span>
+}
+
+// GetAll get all data items (with links) from pg db sorted by date
+func (pgr *PgRepo) GetAll() (model.Data, error) <span class="cov8" title="1">{
+
+        grGetAll := func(ctx context.Context, dbpool *pgxpool.Pool) ([]UserData, error) </span><span class="cov8" title="1">{
+                const sql = `
+        SELECT id, user_id, url, redirs, is_active, short_url, date_time, uid FROM users_data
+            ORDER BY date_time;
+        `
+                rows, err := dbpool.Query(ctx, sql)
+
+                if err != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("failed to query data: %w", err) // Вызов Close нужен, чтобы вернуть соединение в пул
+                }</span>
+                <span class="cov8" title="1">defer rows.Close()
+
+                var usersdata []UserData
+
+                for rows.Next() </span><span class="cov8" title="1">{
+                        var userdata UserData
+
+                        err = rows.Scan(&amp;userdata.ID,
+                                &amp;userdata.UserID,
+                                &amp;userdata.URL,
+                                &amp;userdata.Redirs,
+                                &amp;userdata.IsActive,
+                                &amp;userdata.ShortURL,
+                                &amp;userdata.DateTime,
+                                &amp;userdata.UID,
+                        )
+
+                        if err != nil </span><span class="cov0" title="0">{
+                                return nil, fmt.Errorf("failed to scan row: %w", err)
+                        }</span>
+
+                        <span class="cov8" title="1">usersdata = append(usersdata, userdata)</span>
+                }
+
+                <span class="cov8" title="1">if rows.Err() != nil </span><span class="cov0" title="0">{
+                        return nil, fmt.Errorf("failed to read response: %w", rows.Err())
+                }</span>
+
+                <span class="cov8" title="1">return usersdata, nil</span>
+        }
+
+        <span class="cov8" title="1">usersdata, err := grGetAll(pgr.CTX, pgr.DBPool)
+        if err != nil </span><span class="cov0" title="0">{
+                return model.Data{}, err
+        }</span>
+
+        //reload pg usersdata to model datael
+        <span class="cov8" title="1">var alldata model.Data
+        for _, userdata := range usersdata </span><span class="cov8" title="1">{
+                //adjust field Active db - bool , api - int
+                var activeInt = 0
+                if userdata.IsActive </span><span class="cov8" title="1">{
+                        activeInt = 1
+                }</span>
+
+                <span class="cov8" title="1">modeldata := model.DataEl{UID: userdata.UID,
+                        URL:      userdata.URL,
+                        Shorturl: userdata.ShortURL,
+                        Datetime: userdata.DateTime,
+                        Active:   activeInt,
+                        Redirs:   userdata.Redirs,
+                }
+
+                alldata.Data = append(alldata.Data, modeldata)</span>
+
+        }
+        <span class="cov8" title="1">return alldata, nil</span>
 }
 </pre>
 

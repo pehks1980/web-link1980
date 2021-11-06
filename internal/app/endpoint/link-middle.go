@@ -15,6 +15,21 @@ import (
 // lint error fix - did not like string type
 type ctxKey struct{}
 
+//PromMiddlewareFunc - оценивает время обработки и выводит его в гистограмму /metrics
+func PromMiddlewareFunc(promif PromIf) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var prom = promif
+			start := time.Now()
+			next.ServeHTTP(w, r)
+			// Гистограмма апдейт
+			// для каждого метода GET, POST etc, будет свое распределение
+			endtime := time.Since(start).Microseconds()
+			prom.UpdateHist(r.Method, float64(endtime))
+		})
+	}
+}
+
 // LoggingMiddleware - logs any request to api
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -29,7 +44,17 @@ func LoggingMiddleware(next http.Handler) http.Handler {
 			UID,
 			time.Since(start),
 		)
+		/*
+			log.Printf("--> %s %s", r.Method, r.URL.Path)
+
+			lrw := negroni.NewResponseWriter(w)
+			next.ServeHTTP(lrw, r)
+
+			statusCode := lrw.Status()
+			log.Printf("<-- %d %s", statusCode, http.StatusText(statusCode))
+		*/
 	})
+
 }
 
 // GenJWTWithClaims - generate jwt tokens pair
@@ -79,12 +104,28 @@ func JWTCheckMiddleware(next http.Handler) http.Handler {
 			return
 		}
 
-		re := regexp.MustCompile(`/shortopen/`)
-		res := re.FindStringSubmatch(r.RequestURI)
-		if len(res) != 0 {
+		if r.RequestURI == "/user/register" {
 			//bypass jwt check when authenticating
 			next.ServeHTTP(w, r)
 			return
+		}
+
+		if r.RequestURI == "/metrics" {
+			//bypass jwt check when access prom metrics
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		checkif := 1 // db case svc.WhoAmI()
+		if checkif == 0 {
+			// bypass middle ware token logic in old version using file storage
+			re := regexp.MustCompile(`/shortopen/`)
+			res := re.FindStringSubmatch(r.RequestURI)
+			if len(res) != 0 {
+				//bypass jwt check when authenticating
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 
 		authHeader := strings.Split(r.Header.Get("Authorization"), "Bearer ")

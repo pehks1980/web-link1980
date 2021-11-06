@@ -29,6 +29,7 @@ var (
 		9:   "Unknown content type",
 		10:  "Internal repo problem",
 		11:  "No shorturl in data",
+		12:  "Login error, provide username password",
 		400: "Bad request",
 		401: "Unauthorized",
 		402: "Payment required",

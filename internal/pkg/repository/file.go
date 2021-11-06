@@ -1,8 +1,10 @@
 package repository
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/opentracing/opentracing-go"
 	"io/ioutil"
 	"log"
 	"os"
@@ -14,12 +16,27 @@ import (
 
 // RepoIf - main methods for a storage (a file repo) same as linkSVC
 type RepoIf interface {
-	New(filename string) RepoIf
-	Get(uid, key string) (model.DataEl, error)
-	Put(uid, key string, value model.DataEl) error
-	Del(uid, key string) error
-	List(uid string) ([]string, error)
-	GetUn(shortlink string) (model.DataEl, error)
+	New(filename string, tracer opentracing.Tracer, ctx context.Context) RepoIf
+	Get(uid, key string, su bool) (model.DataEl, error)
+	Put(uid, key string, value model.DataEl, su bool) error
+	Del(uid, key string, su bool) error
+	List(uid string, ctx context.Context) ([]string, error)
+	GetUn(shortlink string) (string, error)
+	CloseConn()
+	PutUser(value model.User) (string, error)
+	DelUser(uid string) error
+	GetUser(uid string) (model.User, error)
+	WhoAmI() uint64
+	PayUser(uidA, uidB, amount string, ctx context.Context) error
+	FindSuperUser() (string, error)
+	GetAll() (model.Data, error)
+	AuthUser(user model.User) (string, error)
+	GetAllUsers() (model.Users, error)
+}
+
+//GetAllUsers - stub
+func (fr *FileRepo) GetAllUsers() (model.Users, error) {
+	return model.Users{}, nil
 }
 
 // FileRepo - структура для файло-стораджа
@@ -30,8 +47,18 @@ type FileRepo struct {
 	fileData map[string]model.DataEl
 }
 
+//AuthUser - stub
+func (fr *FileRepo) AuthUser(user model.User) (string, error) {
+	return "", nil
+}
+
+// WhoAmI - identification of interface
+func (fr *FileRepo) WhoAmI() uint64 {
+	return 0
+}
+
 // New - инициализация файлостораджа
-func (fr *FileRepo) New(filename string) RepoIf {
+func (fr *FileRepo) New(filename string, tracer opentracing.Tracer, ctx context.Context) RepoIf {
 	// init file repo
 	fileRepo := &FileRepo{
 		fileName: filename,
@@ -118,7 +145,7 @@ func (fr *FileRepo) FileRepoUnpackToStruct() error {
 
 // Get - get data string from repo
 // uid:key - user:key
-func (fr *FileRepo) Get(uid, key string) (model.DataEl, error) {
+func (fr *FileRepo) Get(uid, key string, su bool) (model.DataEl, error) {
 	fr.RWMutex.RLock() // read lock only
 	defer fr.RWMutex.RUnlock()
 	// get data needed
@@ -140,7 +167,7 @@ func (fr *FileRepo) Get(uid, key string) (model.DataEl, error) {
 
 // GetUn - find unique shortlink in storage for shortopen api method
 // + update redir count (protected by lock)
-func (fr *FileRepo) GetUn(shortlink string) (model.DataEl, error) {
+func (fr *FileRepo) GetUn(shortlink string) (string, error) {
 	fr.RWMutex.Lock()
 	defer fr.RWMutex.Unlock()
 	// get data needed
@@ -154,7 +181,7 @@ func (fr *FileRepo) GetUn(shortlink string) (model.DataEl, error) {
 			if datael.Active == 0 {
 				// deleted already
 				err := fmt.Errorf("link deleted already")
-				return model.DataEl{}, err
+				return "", err
 			}
 			// update redirs count save it and return it
 			datael.Redirs++
@@ -162,18 +189,18 @@ func (fr *FileRepo) GetUn(shortlink string) (model.DataEl, error) {
 			// changes needs to be flushed to file
 			err := fr.DumpMapToFile()
 			if err != nil {
-				return model.DataEl{}, err
+				return "", err
 			}
-			return datael, nil
+			return datael.URL, nil
 		}
 	}
 
 	err := fmt.Errorf("No such link")
-	return model.DataEl{}, err
+	return "", err
 }
 
 // Put - store data string to repo
-func (fr *FileRepo) Put(uid, key string, value model.DataEl) error {
+func (fr *FileRepo) Put(uid, key string, value model.DataEl, su bool) error {
 	fr.RWMutex.Lock()
 	defer fr.RWMutex.Unlock()
 	/*	if _, ok := fr.fileData[key]; !ok {
@@ -193,7 +220,7 @@ func (fr *FileRepo) Put(uid, key string, value model.DataEl) error {
 }
 
 // Del - mark Active = 0 to 'delete'
-func (fr *FileRepo) Del(uid, key string) error {
+func (fr *FileRepo) Del(uid, key string, su bool) error {
 	fr.RWMutex.Lock()
 	defer fr.RWMutex.Unlock()
 	key = uid + ":" + key
@@ -212,7 +239,7 @@ func (fr *FileRepo) Del(uid, key string) error {
 }
 
 // List - list all keys for this user uid
-func (fr *FileRepo) List(uid string) ([]string, error) {
+func (fr *FileRepo) List(uid string, ctx context.Context) ([]string, error) {
 	fr.RWMutex.RLock()
 	defer fr.RWMutex.RUnlock()
 	// get data needed
@@ -224,4 +251,44 @@ func (fr *FileRepo) List(uid string) ([]string, error) {
 		}
 	}
 	return keys, nil
+}
+
+// GetAll заглушки
+func (fr *FileRepo) GetAll() (model.Data, error) {
+	return model.Data{}, nil
+}
+
+// PayUser заглушки
+func (fr *FileRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error {
+	return nil
+}
+
+// FindSuperUser заглушки
+func (fr *FileRepo) FindSuperUser() (string, error) {
+	return "", nil
+}
+
+// PutUser заглушки
+func (fr *FileRepo) PutUser(value model.User) (string, error) {
+	return "", nil
+}
+
+// DelUser заглушки
+func (fr *FileRepo) DelUser(uid string) error {
+	return nil
+}
+
+// GetUser заглушки
+func (fr *FileRepo) GetUser(uid string) (model.User, error) {
+	return model.User{}, nil
+}
+
+// AddUser заглушки
+func (fr *FileRepo) AddUser(value model.User) (string, error) {
+	return "", nil
+}
+
+// CloseConn заглушки
+func (fr *FileRepo) CloseConn() {
+
 }

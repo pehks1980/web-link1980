@@ -2,9 +2,13 @@ package endpoint_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/uber/jaeger-client-go/config"
+	jaegerlog "github.com/uber/jaeger-client-go/log"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -29,13 +33,47 @@ func TestHandler(t *testing.T) {
 	var repoif repository.RepoIf
 	// подстановка в интерфейс соотвествующего хранилища
 	repoif = new(repository.FileRepo)
+
+	// create empty context for this app
+	ctx := context.Background()
+
+
+
+	var promif, prometh endpoint.PromIf
+	// подстановка в интерфейс соотвествующего хранилища
+	promif = new(endpoint.Prom)
+	prometh = promif.New()
+
+	// init tracer
+	jLogger := jaegerlog.StdLogger
+	// tracer config init
+	cfg := &config.Configuration{
+		ServiceName: "weblink",
+		Sampler: &config.SamplerConfig{
+			Type:  "const",
+			Param: 1,
+		},
+		Reporter: &config.ReporterConfig{
+			LocalAgentHostPort: "127.0.0.1:6831",
+			LogSpans: true,
+		},
+	}
+	jTracer, jCloser, err := cfg.NewTracer(config.Logger(jLogger))
+
+	if err != nil {
+		log.Fatalf("cannot init Jaeger err: %v", err)
+	}
+	// close the closer
+	defer jCloser.Close()
+
 	// вызов метода интерфейса - инициализация конфигa
-	linkSVC := repoif.New("test.json")
-	handler := endpoint.RegisterPublicHTTP(linkSVC)
+	linkSVC := repoif.New("test.json", jTracer, ctx)
+
+	handler := endpoint.RegisterPublicHTTP(linkSVC, prometh, jTracer)
 
 	// auth test /////////////////////////////////////////////////////////////////////////////////////
 	// setup test request
-	var jsonStr = []byte(`{"uid":"any user"}`)
+	var jsonStr = []byte(`{"name":"any user"}`)
 	req, err := http.NewRequest("POST", "/user/auth", bytes.NewBuffer(jsonStr))
 	if err != nil {
 		t.Fatal(err)
@@ -53,6 +91,7 @@ func TestHandler(t *testing.T) {
 	if status := rr.Code; status != http.StatusOK {
 		t.Errorf("handler returned wrong status code: got %v want %v",
 			status, http.StatusOK)
+		return
 	}
 	//  работаем с телом ответа
 	p, errR := ioutil.ReadAll(rr.Body)
@@ -146,9 +185,9 @@ func TestHandler(t *testing.T) {
 	// execute server with test request
 	handler.ServeHTTP(rr, req)
 	// Проверяем статус-код ответа
-	if status := rr.Code; status != http.StatusSeeOther {
+	if status := rr.Code; status != http.StatusFound {
 		t.Errorf("handler returned wrong status code: got %v want %v",
-			status, http.StatusSeeOther)
+			status, http.StatusFound)
 	}
 	//  работаем с телом ответа
 	p, errR = ioutil.ReadAll(rr.Body)
