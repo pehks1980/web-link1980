@@ -10,21 +10,21 @@ import (
 )
 
 // GetUserStorageKeys - get all keys for this user in repo
-func GetUserStorageKeys(request *http.Request, linkSvc linkSvc, ctx context.Context) ([]string, string, error) {
+func GetUserStorageKeys(ctx context.Context, request *http.Request, linkSvc linkSvc) ([]string, string, error) {
 	props, _ := request.Context().Value(ctxKey{}).(jwt.MapClaims)
 	//fmt.Println(props["uid"])
 	UID := fmt.Sprintf("%v", props["uid"])
 
-	storageKeys, err := linkSvc.List(UID, ctx)
+	storageKeys, err := linkSvc.List(ctx, UID)
 	return storageKeys, UID, err
 }
 
 // ValidateRequestShortLink - валидация shortlink параметра в request
 // Возвращает саму ссылку, юзерайди (из токена), результат - тру - валидно
 // инвалидно - результ - фалз, и все пустое.
-func ValidateRequestShortLink(request *http.Request, linkSvc linkSvc, ctx context.Context) (string, string, bool) {
+func ValidateRequestShortLink(ctx context.Context, request *http.Request, linkSvc linkSvc) (string, string, bool) {
 
-	storageKeys, UID, err := GetUserStorageKeys(request, linkSvc, ctx)
+	storageKeys, UID, err := GetUserStorageKeys(ctx, request, linkSvc)
 	if err != nil {
 		return "", "", false
 	}

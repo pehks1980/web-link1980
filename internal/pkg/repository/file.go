@@ -4,37 +4,39 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/opentracing/opentracing-go"
 	"io/ioutil"
 	"log"
 	"os"
 	"strings"
 	"sync"
 
+	//"github.com/opentracing/opentracing-go"
+
 	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/model"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // RepoIf - main methods for a storage (a file repo) same as linkSVC
 type RepoIf interface {
-	New(filename string, tracer opentracing.Tracer, ctx context.Context) RepoIf
-	Get(uid, key string, su bool) (model.DataEl, error)
-	Put(uid, key string, value model.DataEl, su bool) error
-	Del(uid, key string, su bool) error
-	List(uid string, ctx context.Context) ([]string, error)
-	GetUn(shortlink string) (string, error)
+	New(ctx context.Context, filename string, tracer trace.Tracer) RepoIf
+	Get(ctx context.Context, uid, key string, su bool) (model.DataEl, error)
+	Put(ctx context.Context, uid, key string, value model.DataEl, su bool) error
+	Del(ctx context.Context, uid, key string, su bool) (string, error)
+	List(ctx context.Context, uid string) ([]string, error)
+	GetUn(ctx context.Context, shortlink string) (string, error)
 	CloseConn()
 	PutUser(value model.User) (string, error)
 	DelUser(uid string) error
 	GetUser(uid string) (model.User, error)
 	WhoAmI() uint64
-	PayUser(uidA, uidB, amount string, ctx context.Context) error
+	PayUser(ctx context.Context, uidA, uidB, amount string) error
 	FindSuperUser() (string, error)
-	GetAll() (model.Data, error)
+	GetAll(ctx context.Context, uid string) (model.Data, error)
 	AuthUser(user model.User) (string, error)
 	GetAllUsers() (model.Users, error)
 }
 
-//GetAllUsers - stub
+// GetAllUsers - stub
 func (fr *FileRepo) GetAllUsers() (model.Users, error) {
 	return model.Users{}, nil
 }
@@ -47,7 +49,7 @@ type FileRepo struct {
 	fileData map[string]model.DataEl
 }
 
-//AuthUser - stub
+// AuthUser - stub
 func (fr *FileRepo) AuthUser(user model.User) (string, error) {
 	return "", nil
 }
@@ -58,7 +60,7 @@ func (fr *FileRepo) WhoAmI() uint64 {
 }
 
 // New - инициализация файлостораджа
-func (fr *FileRepo) New(filename string, tracer opentracing.Tracer, ctx context.Context) RepoIf {
+func (fr *FileRepo) New(ctx context.Context, filename string, tracer trace.Tracer) RepoIf {
 	// init file repo
 	fileRepo := &FileRepo{
 		fileName: filename,
@@ -145,7 +147,7 @@ func (fr *FileRepo) FileRepoUnpackToStruct() error {
 
 // Get - get data string from repo
 // uid:key - user:key
-func (fr *FileRepo) Get(uid, key string, su bool) (model.DataEl, error) {
+func (fr *FileRepo) Get(ctx context.Context, uid, key string, su bool) (model.DataEl, error) {
 	fr.RWMutex.RLock() // read lock only
 	defer fr.RWMutex.RUnlock()
 	// get data needed
@@ -167,7 +169,7 @@ func (fr *FileRepo) Get(uid, key string, su bool) (model.DataEl, error) {
 
 // GetUn - find unique shortlink in storage for shortopen api method
 // + update redir count (protected by lock)
-func (fr *FileRepo) GetUn(shortlink string) (string, error) {
+func (fr *FileRepo) GetUn(ctx context.Context, shortlink string) (string, error) {
 	fr.RWMutex.Lock()
 	defer fr.RWMutex.Unlock()
 	// get data needed
@@ -200,7 +202,7 @@ func (fr *FileRepo) GetUn(shortlink string) (string, error) {
 }
 
 // Put - store data string to repo
-func (fr *FileRepo) Put(uid, key string, value model.DataEl, su bool) error {
+func (fr *FileRepo) Put(ctx context.Context, uid, key string, value model.DataEl, su bool) error {
 	fr.RWMutex.Lock()
 	defer fr.RWMutex.Unlock()
 	/*	if _, ok := fr.fileData[key]; !ok {
@@ -220,7 +222,7 @@ func (fr *FileRepo) Put(uid, key string, value model.DataEl, su bool) error {
 }
 
 // Del - mark Active = 0 to 'delete'
-func (fr *FileRepo) Del(uid, key string, su bool) error {
+func (fr *FileRepo) Del(ctx context.Context, uid, key string, su bool) (string, error) {
 	fr.RWMutex.Lock()
 	defer fr.RWMutex.Unlock()
 	key = uid + ":" + key
@@ -230,16 +232,16 @@ func (fr *FileRepo) Del(uid, key string, su bool) error {
 		// dump data to file straight away
 		err := fr.DumpMapToFile()
 		if err != nil {
-			return err
+			return "", err
 		}
-		return nil
+		return uid, nil
 	}
 	err := fmt.Errorf("delete error key %s don't exist", key)
-	return err
+	return "", err
 }
 
 // List - list all keys for this user uid
-func (fr *FileRepo) List(uid string, ctx context.Context) ([]string, error) {
+func (fr *FileRepo) List(ctx context.Context, uid string) ([]string, error) {
 	fr.RWMutex.RLock()
 	defer fr.RWMutex.RUnlock()
 	// get data needed
@@ -254,12 +256,12 @@ func (fr *FileRepo) List(uid string, ctx context.Context) ([]string, error) {
 }
 
 // GetAll заглушки
-func (fr *FileRepo) GetAll() (model.Data, error) {
+func (fr *FileRepo) GetAll(ctx context.Context, uid string) (model.Data, error) {
 	return model.Data{}, nil
 }
 
 // PayUser заглушки
-func (fr *FileRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error {
+func (fr *FileRepo) PayUser(ctx context.Context, uidA, uidB, amount string) error {
 	return nil
 }
 

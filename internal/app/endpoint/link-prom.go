@@ -4,7 +4,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-//PromIf - Prometh interface
+// PromIf - Prometh interface
 type PromIf interface {
 	New() PromIf
 	UpdateHist(method string, dtime float64)
@@ -18,13 +18,13 @@ const (
 	LabelStatus = "status"
 )
 
-//Prom - prometheus counters struct
+// Prom - prometheus counters struct
 type Prom struct {
 	latencyHistogram *prometheus.HistogramVec
 	authCounter      prometheus.Counter
 }
 
-//New - init counters
+// New - init counters
 func (p *Prom) New() PromIf {
 
 	prom := &Prom{}
@@ -52,12 +52,12 @@ func (p *Prom) New() PromIf {
 	return prom
 }
 
-//UpdateHist - update prom histogram
+// UpdateHist - update prom histogram
 func (p *Prom) UpdateHist(method string, dtime float64) {
 	p.latencyHistogram.With(prometheus.Labels{LabelMethod: method}).Observe(dtime)
 }
 
-//UpdateCtr - update prom auth counter
+// UpdateCtr - update prom auth counter
 func (p *Prom) UpdateCtr() {
 	p.authCounter.Inc()
 }

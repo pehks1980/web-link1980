@@ -5,6 +5,7 @@ package repository_test
 // go test --tags=integration . --run tests + integration tests. ,
 // '/ +build integration' avoids test to be runned by 'go test .'
 import (
+	"context"
 	"fmt"
 	"os"
 	"testing"
@@ -13,12 +14,21 @@ import (
 	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/model"
 	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/repository"
 	"github.com/stretchr/testify/require"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestIntegrationSVCFileRepo(t *testing.T) {
 	var repoif, linkSVC repository.RepoIf
 	repoif = new(repository.FileRepo)
-	linkSVC = repoif.New("test_storage.json")
+
+	// No-op tracer (does nothing)
+	var noopTracer trace.Tracer
+	noopTracer = trace.NewNoopTracerProvider().Tracer("test")
+
+	ctx := context.Background()
+
+	linkSVC = repoif.New(ctx, "test_storage.json", noopTracer)
 	// init test struct
 	tests := []struct {
 		name     string
@@ -49,13 +59,13 @@ func TestIntegrationSVCFileRepo(t *testing.T) {
 					Active:   1,
 				}
 
-				_ = linkSVC.Put(uid, userdata.Shorturl, userdata, false)
+				_ = linkSVC.Put(ctx, uid, userdata.Shorturl, userdata, false)
 
 				return uid
 			},
 			testfunc: func(UID string) (model.DataEl, []string, error) {
 				fmt.Print("run FileRepo Get \n")
-				data, err := linkSVC.Get(UID, "abracadabra.gu", false)
+				data, err := linkSVC.Get(ctx, UID, "abracadabra.gu", false)
 				return data, nil, err
 			},
 			check: func(t *testing.T, alldata model.DataEl, keylist []string, err error) {
@@ -64,7 +74,7 @@ func TestIntegrationSVCFileRepo(t *testing.T) {
 			},
 			remove: func(UID string) {
 				fmt.Print("remove\n")
-				linkSVC.Del(UID, "abracadabra.gu", false)
+				linkSVC.Del(ctx, UID, "abracadabra.gu", false)
 			},
 		},
 		{ // struct
@@ -85,7 +95,7 @@ func TestIntegrationSVCFileRepo(t *testing.T) {
 					Active:   1,
 				}
 
-				_ = linkSVC.Put(uid, userdata.Shorturl, userdata, false)
+				_ = linkSVC.Put(ctx, uid, userdata.Shorturl, userdata, false)
 
 				return uid
 			},
@@ -102,7 +112,7 @@ func TestIntegrationSVCFileRepo(t *testing.T) {
 					Active:   1,
 				}
 
-				err := linkSVC.Put(UID, "abracadabra.gu", userdata, false)
+				err := linkSVC.Put(ctx, UID, "abracadabra.gu", userdata, false)
 				return model.DataEl{}, nil, err
 			},
 			check: func(t *testing.T, alldata model.DataEl, keylist []string, err error) {
@@ -132,20 +142,20 @@ func TestIntegrationSVCFileRepo(t *testing.T) {
 					Active:   1,
 				}
 
-				_ = linkSVC.Put(uid, userdata.Shorturl, userdata, false)
+				_ = linkSVC.Put(ctx, uid, userdata.Shorturl, userdata, false)
 
 				userdata.URL = "yandex.ru"
 				userdata.Shorturl = "abrashvabrakadabra.gu"
 				userdata.Datetime = time.Now()
 
-				_ = linkSVC.Put(uid, userdata.Shorturl, userdata, false)
+				_ = linkSVC.Put(ctx, uid, userdata.Shorturl, userdata, false)
 
 				return uid
 			},
 			testfunc: func(UID string) (model.DataEl, []string, error) {
 				fmt.Print("run FileRepo List \n")
 
-				keylist, err := linkSVC.List(UID)
+				keylist, err := linkSVC.List(ctx, UID)
 				return model.DataEl{}, keylist, err
 			},
 			check: func(t *testing.T, alldata model.DataEl, keylist []string, err error) {
@@ -175,14 +185,14 @@ func TestIntegrationSVCFileRepo(t *testing.T) {
 					Active:   1,
 				}
 
-				_ = linkSVC.Put(uid, userdata.Shorturl, userdata, false)
+				_ = linkSVC.Put(ctx, uid, userdata.Shorturl, userdata, false)
 
 				return uid
 			},
 			testfunc: func(UID string) (model.DataEl, []string, error) {
 				fmt.Print("run FileRepo GetUn \n")
 
-				val, err := linkSVC.GetUn("abracadabra.gu")
+				val, err := linkSVC.GetUn(ctx, "abracadabra.gu")
 				var keylist []string
 				// add value to keylist[0]
 				keylist = append(keylist, val)

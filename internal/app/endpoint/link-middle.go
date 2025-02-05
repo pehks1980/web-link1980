@@ -15,7 +15,7 @@ import (
 // lint error fix - did not like string type
 type ctxKey struct{}
 
-//PromMiddlewareFunc - оценивает время обработки и выводит его в гистограмму /metrics
+// PromMiddlewareFunc - оценивает время обработки и выводит его в гистограмму /metrics
 func PromMiddlewareFunc(promif PromIf) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -111,6 +111,12 @@ func JWTCheckMiddleware(next http.Handler) http.Handler {
 		}
 
 		if r.RequestURI == "/metrics" {
+			//bypass jwt check when access prom metrics
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.RequestURI == "/__heartbeat__" {
 			//bypass jwt check when access prom metrics
 			next.ServeHTTP(w, r)
 			return

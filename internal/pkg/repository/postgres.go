@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 
 	"log"
@@ -14,11 +15,10 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/pehks1980/go_gb_be1_kurs/web-link/internal/pkg/model"
 
-	"github.com/opentracing/opentracing-go"
-	tracerlog "github.com/opentracing/opentracing-go/log"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 
 	"go.uber.org/zap"
-	_ "go.uber.org/zap/zapcore"
 )
 
 type tUserRole string
@@ -74,7 +74,7 @@ type PgRepo struct {
 	CTX    context.Context
 	DBPool *pgxpool.Pool
 	Logger *zap.Logger
-	Tracer opentracing.Tracer
+	Tracer trace.Tracer
 }
 
 // GetAllUsers - suid method to get all users data
@@ -218,9 +218,7 @@ func (pgr *PgRepo) CloseConn() {
 }
 
 // New Init of pg driver
-func (pgr *PgRepo) New(filename string, tracer opentracing.Tracer, ctx context.Context) RepoIf {
-
-
+func (pgr *PgRepo) New(ctx context.Context, filename string, tracer trace.Tracer) RepoIf {
 	// Строка для подключения к базе данных
 	url := filename //"postgres://postuser:postpassword@192.168.1.204:5432/a4"
 	cfg, err := pgxpool.ParseConfig(url)
@@ -258,7 +256,7 @@ func (pgr *PgRepo) New(filename string, tracer opentracing.Tracer, ctx context.C
 	}
 
 	return &PgRepo{
-		CTX: 	ctx,
+		CTX:    ctx,
 		URL:    url,
 		DBPool: dbpool,
 		Tracer: tracer,
@@ -268,7 +266,7 @@ func (pgr *PgRepo) New(filename string, tracer opentracing.Tracer, ctx context.C
 // Get - get data string from pg repo
 // uid - user uid, key - shortlink
 // if uid == suid (SUPERUSER uid) - retreives information despite original uid
-func (pgr *PgRepo) Get(uid, key string, su bool) (model.DataEl, error) {
+func (pgr *PgRepo) Get(ctx context.Context, uid, key string, su bool) (model.DataEl, error) {
 
 	grGet := func(ctx context.Context, dbpool *pgxpool.Pool, uid, shorturl string, su bool) (UserData, error) {
 		const sql = `
@@ -348,7 +346,14 @@ func (pgr *PgRepo) Get(uid, key string, su bool) (model.DataEl, error) {
 // Put - store data string to pg repo
 // uid - user uid, key - shortlink
 // if uid == suid (SUPERUSER uid) - updates repo information despite original uid
-func (pgr *PgRepo) Put(uid, key string, value model.DataEl, su bool) error {
+// checking if uid/suid is eligible is done at API handler level
+func (pgr *PgRepo) Put(ctx context.Context, uid, key string, value model.DataEl, su bool) error {
+
+	//span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, pgr.Tracer, "pg_repo.PUT")
+	//defer span.Finish()
+
+	_, span := pgr.Tracer.Start(context.Background(), "Put to PG repo")
+	defer span.End()
 
 	grPut := func(ctx context.Context, dbpool *pgxpool.Pool, uid, key string, userdata *UserData) error {
 		const sql = `
@@ -360,6 +365,14 @@ func (pgr *PgRepo) Put(uid, key string, value model.DataEl, su bool) error {
                           date_time = excluded.date_time,
                           uid = excluded.uid;
 	`
+		data, _ := json.Marshal(userdata)
+
+		span.AddEvent("SQL Query", trace.WithAttributes(
+			attribute.String("query", sql),
+			attribute.String("uid", uid),
+			attribute.String("data", string(data)),
+		))
+
 		_, err := dbpool.Exec(ctx, sql,
 			uid,
 			userdata.URL,
@@ -401,7 +414,7 @@ func (pgr *PgRepo) Put(uid, key string, value model.DataEl, su bool) error {
 // Del - delete data entity from pg repo
 // uid - user uid, key - shortlink
 // if uid == suid (SUPERUSER uid) - updates repo information despite original uid
-func (pgr *PgRepo) Del(uid, key string, su bool) error {
+func (pgr *PgRepo) Del(ctx context.Context, uid, key string, su bool) (string, error) {
 
 	grDel := func(ctx context.Context, dbpool *pgxpool.Pool, uid, shorturl string, su bool) error {
 		const sql = `
@@ -434,33 +447,66 @@ func (pgr *PgRepo) Del(uid, key string, su bool) error {
 
 	suid, _ := pgr.FindSuperUser()
 	var err error
+	var useruid string
 	if suid == uid {
+		useruid, _ = grGetUseruid(pgr.CTX, pgr.DBPool, key)
 		err = grDel(pgr.CTX, pgr.DBPool, uid, key, true)
 	} else {
 		err = grDel(pgr.CTX, pgr.DBPool, uid, key, false)
+		useruid = uid
 	}
 
 	if err != nil {
-		return err
+		return "", err
 	}
-	return nil
+	return useruid, nil
+}
+
+// grGetUseruid - func retrieves uid from from short_url link
+// its needed for normal cache working
+func grGetUseruid(ctx context.Context, dbpool *pgxpool.Pool, shorturl string) (string, error) {
+	const sql = `
+	SELECT uid FROM users_data
+    	WHERE short_url = $1;
+	`
+	var (
+		rows pgx.Rows
+		err  error
+		uid  string
+	)
+
+	rows, err = dbpool.Query(ctx, sql, shorturl)
+	defer rows.Close()
+
+	for rows.Next() {
+		err = rows.Scan(&uid)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	return uid, nil
 }
 
 // List - list all keys for this user uid
-func (pgr *PgRepo) List(uid string, ctx context.Context) ([]string, error) {
+func (pgr *PgRepo) List(ctx context.Context, uid string) ([]string, error) {
 
-	span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, pgr.Tracer, "pg_repo.LIST")
-	defer span.Finish()
+	ctx, span := pgr.Tracer.Start(context.Background(), "pg_repo.LIST")
+	defer span.End()
 
-	grList := func(ctx context.Context, dbpool *pgxpool.Pool, uid string, span opentracing.Span) ([]string, error) {
+	//span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, pgr.Tracer, "pg_repo.LIST")
+	//defer span.Finish()
+
+	grList := func(ctx context.Context, dbpool *pgxpool.Pool, uid string, span trace.Span) ([]string, error) {
 		const sql = `
 	SELECT short_url FROM users_data
 		WHERE uid = $1;
 	`
-		span.LogFields(
-			tracerlog.String("query", sql),
-			tracerlog.String("arg0", uid),
-		)
+		span.AddEvent("SQL Query", trace.WithAttributes(
+			attribute.String("query", sql),
+			attribute.String("arg0", uid),
+		))
+
 		rows, err := dbpool.Query(ctx, sql, uid)
 
 		var usersShortURL []string
@@ -531,7 +577,7 @@ func inTx(ctx context.Context, dbpool *pgxpool.Pool, f TransactionFunc) (string,
 
 // GetUn - find unique shortlink in storage for shortopen api method
 // + update redir count (protected by lock)
-func (pgr *PgRepo) GetUn(shortlink string) (string, error) {
+func (pgr *PgRepo) GetUn(ctx context.Context, shortlink string) (string, error) {
 
 	grGetUn := func(ctx context.Context, dbpool *pgxpool.Pool, shorturl string) (string, error) {
 
@@ -592,7 +638,7 @@ func MyHash256(seq string) string {
 	return fmt.Sprintf("%x", hash[:15])
 }
 
-// PutUser new user add or update
+// PutUser new user add or update current profile
 func (pgr *PgRepo) PutUser(value model.User) (string, error) {
 
 	grAddUser := func(ctx context.Context, dbpool *pgxpool.Pool, user *User) (int, error) {
@@ -785,12 +831,16 @@ func (pgr *PgRepo) FindSuperUser() (string, error) {
 }
 
 // PayUser - pay amount for uidA to uidB as transaction
-func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error {
+func (pgr *PgRepo) PayUser(ctx context.Context, uidA, uidB, amount string) error {
 
-	span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, pgr.Tracer, "pg_repo.PayUser")
-	defer span.Finish()
+	//span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, pgr.Tracer, "pg_repo.PayUser")
+	//defer span.Finish()
+
+	ctx, span := pgr.Tracer.Start(context.Background(), "pg_repo.PayUser")
+	defer span.End()
+
 	// pay money transaction b/w users
-	grPayUser := func(ctx context.Context, dbpool *pgxpool.Pool, uidA, uidB string, amount string, span opentracing.Span) error {
+	grPayUser := func(ctx context.Context, dbpool *pgxpool.Pool, uidA, uidB string, amount string, span trace.Span) error {
 
 		const sql = `
 		INSERT INTO users_transactions (date_time,  user_id_from,  user_id_to, amount, description, successful )
@@ -805,12 +855,12 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 		var transID int
 		descrText := "Payment +" + amount + " from " + uidA + " for " + uidB
 
-		span.LogFields(
-			tracerlog.String("1_query", sql),
-			tracerlog.String("1_uidA", uidA),
-			tracerlog.String("1_uidB", uidB),
-			tracerlog.String("1_amount", amount),
-		)
+		span.AddEvent("SQL Query", trace.WithAttributes(
+			attribute.String("1_query", sql),
+			attribute.String("1_uidA", uidA),
+			attribute.String("1_uidB", uidB),
+			attribute.String("1_amount", amount),
+		))
 
 		err := dbpool.QueryRow(ctx, sql, uidA, uidB, amount, descrText).Scan(&transID)
 		if err != nil {
@@ -822,10 +872,10 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 			const sql1 = `SELECT balance::varchar, is_balance_blocked from users
     						WHERE uid = $1;
 			`
-			span.LogFields(
-				tracerlog.String("2_query", sql1),
-				tracerlog.String("2_uidA", uidA),
-			)
+			span.AddEvent("SQL Query", trace.WithAttributes(
+				attribute.String("2_query", sql1),
+				attribute.String("2_uidA", uidA),
+			))
 			rows, err1 := tx.Query(ctx, sql1, uidA)
 			if err1 != nil {
 				return "", err1
@@ -848,20 +898,20 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 			const sql2 = `
 		UPDATE users SET balance = balance + ($1::numeric) where uid = $2;
 		`
-			span.LogFields(
-				tracerlog.String("3_query", sql2),
-				tracerlog.String("3_amount", amount),
-				tracerlog.String("3_uidB", uidB),
-			)
+			span.AddEvent("SQL Query", trace.WithAttributes(
+				attribute.String("3_query", sql2),
+				attribute.String("3_amount", amount),
+				attribute.String("3_uidB", uidB),
+			))
 			_, err1 = tx.Exec(ctx, sql2, amount, uidB)
 			if err1 != nil {
 				return "", err1
 			}
-			span.LogFields(
-				tracerlog.String("4_query", sql2),
-				tracerlog.String("3_amount", "-"+amount),
-				tracerlog.String("4_uidA", uidA),
-			)
+			span.AddEvent("SQL Query", trace.WithAttributes(
+				attribute.String("4_query", sql2),
+				attribute.String("3_amount", "-"+amount),
+				attribute.String("4_uidA", uidA),
+			))
 			_, err1 = tx.Exec(ctx, sql2, "-"+amount, uidA)
 			if err1 != nil {
 				return "", err1
@@ -872,10 +922,10 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 			SET successful = TRUE
 				WHERE id = $1;
 		`
-			span.LogFields(
-				tracerlog.String("5_query", sql3),
-				tracerlog.String("5_transID", strconv.Itoa(transID)),
-			)
+			span.AddEvent("SQL Query", trace.WithAttributes(
+				attribute.String("5_query", sql3),
+				attribute.String("5_transID", strconv.Itoa(transID)),
+			))
 			_, err1 = tx.Exec(ctx, sql3, transID)
 			if err1 != nil {
 				return "", err1
@@ -885,10 +935,11 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 			const sql4 = `SELECT balance::varchar FROM users
     						WHERE uid = $1;
 			`
-			span.LogFields(
-				tracerlog.String("6_query", sql4),
-				tracerlog.String("6_uidA", uidA),
-			)
+
+			span.AddEvent("SQL Query", trace.WithAttributes(
+				attribute.String("6_query", sql4),
+				attribute.String("6_uidA", uidA),
+			))
 			rows, err1 = tx.Query(ctx, sql4, uidA)
 			if err1 != nil {
 				return "", err1
@@ -907,10 +958,10 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 					WHERE uid = $1;
 			`
 			if balanceA < 0 {
-				span.LogFields(
-					tracerlog.String("7_query", sql5),
-					tracerlog.String("7_uidA", uidA),
-				)
+				span.AddEvent("SQL Query", trace.WithAttributes(
+					attribute.String("7_query", sql5),
+					attribute.String("7_uidA", uidA),
+				))
 				// update user A
 				_, err1 = tx.Exec(ctx, sql5, uidA)
 				if err1 != nil {
@@ -918,10 +969,10 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 				}
 			}
 
-			span.LogFields(
-				tracerlog.String("8_query", sql4),
-				tracerlog.String("8_uidB", uidB),
-			)
+			span.AddEvent("SQL Query", trace.WithAttributes(
+				attribute.String("8_query", sql4),
+				attribute.String("8_uidB", uidB),
+			))
 			rows, err1 = tx.Query(ctx, sql4, uidB)
 			if err1 != nil {
 				return "", err1
@@ -935,10 +986,10 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 			}
 
 			if balanceB < 0 {
-				span.LogFields(
-					tracerlog.String("9_query", sql5),
-					tracerlog.String("9_uidB", uidB),
-				)
+				span.AddEvent("SQL Query", trace.WithAttributes(
+					attribute.String("9_query", sql5),
+					attribute.String("9_uidB", uidB),
+				))
 				// update user B
 				_, err1 = tx.Exec(ctx, sql5, uidB)
 				if err1 != nil {
@@ -964,13 +1015,22 @@ func (pgr *PgRepo) PayUser(uidA, uidB, amount string, ctx context.Context) error
 }
 
 // GetAll get all data items (with links) from pg db sorted by date
-func (pgr *PgRepo) GetAll() (model.Data, error) {
+func (pgr *PgRepo) GetAll(ctx context.Context, uid string) (model.Data, error) {
 
-	grGetAll := func(ctx context.Context, dbpool *pgxpool.Pool) ([]UserData, error) {
+	//span, ctx := opentracing.StartSpanFromContextWithTracer(ctx, pgr.Tracer, "pg_repo.GETALL")
+	//defer span.Finish()
+
+	ctx, span := pgr.Tracer.Start(context.Background(), "pg_repo.GETALL")
+	defer span.End()
+
+	grGetAll := func(ctx context.Context, dbpool *pgxpool.Pool, span trace.Span) ([]UserData, error) {
 		const sql = `
 	SELECT id, user_id, url, redirs, is_active, short_url, date_time, uid FROM users_data
     	ORDER BY date_time;
 	`
+		span.AddEvent("SQL Query", trace.WithAttributes(
+			attribute.String("query", sql),
+		))
 		rows, err := dbpool.Query(ctx, sql)
 
 		if err != nil {
@@ -1007,7 +1067,7 @@ func (pgr *PgRepo) GetAll() (model.Data, error) {
 		return usersdata, nil
 	}
 
-	usersdata, err := grGetAll(pgr.CTX, pgr.DBPool)
+	usersdata, err := grGetAll(pgr.CTX, pgr.DBPool, span)
 	if err != nil {
 		return model.Data{}, err
 	}
